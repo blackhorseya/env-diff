@@ -330,3 +330,85 @@ func TestNeverPrintsValues(t *testing.T) {
 		})
 	}
 }
+
+// TestExamples pins the files in examples/ to the samples in README.md.
+// The README shows these exact outputs, so a change to the example files,
+// the output format, or the README must update the others.
+func TestExamples(t *testing.T) {
+	t.Chdir(filepath.Join("..", "..", "examples"))
+
+	res := run(t, ".env.staging", ".env.production")
+	if res.code != exitDrift {
+		t.Fatalf("staging vs production: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want := "Environment Drift\n" +
+		"\n" +
+		"Missing in target\n" +
+		"  STRIPE_API_KEY\n" +
+		"\n" +
+		"Extra in target\n" +
+		"  OLD_FEATURE_FLAG\n" +
+		"\n" +
+		"Different values\n" +
+		"  LOG_LEVEL\n" +
+		"\n" +
+		"3 differences found\n"
+	if res.stdout != want {
+		t.Errorf("staging vs production:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
+	res = run(t, ".env.example", ".env.production", "--keys-only")
+	if res.code != exitDrift {
+		t.Fatalf("example vs production: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = "Environment Drift (keys only)\n" +
+		"\n" +
+		"Missing in target\n" +
+		"  STRIPE_API_KEY\n" +
+		"\n" +
+		"Extra in target\n" +
+		"  OLD_FEATURE_FLAG\n" +
+		"\n" +
+		"2 differences found\n"
+	if res.stdout != want {
+		t.Errorf("example vs production --keys-only:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
+	if res = run(t, ".env.example", ".env.staging", "--keys-only"); res.code != exitOK {
+		t.Errorf("example vs staging --keys-only: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+
+	res = run(t, ".env.staging", ".env.production", "--format", "json")
+	if res.code != exitDrift {
+		t.Fatalf("json: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = `{
+  "source": ".env.staging",
+  "target": ".env.production",
+  "keys_only": false,
+  "drift": true,
+  "summary": {
+    "same": 2,
+    "missing": 1,
+    "extra": 1,
+    "different": 1
+  },
+  "missing": [
+    "STRIPE_API_KEY"
+  ],
+  "extra": [
+    "OLD_FEATURE_FLAG"
+  ],
+  "different": [
+    "LOG_LEVEL"
+  ],
+  "same": [
+    "DATABASE_URL",
+    "REDIS_URL"
+  ]
+}
+`
+	if res.stdout != want {
+		t.Errorf("json:\n%s\nwant:\n%s", res.stdout, want)
+	}
+}

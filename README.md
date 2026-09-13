@@ -24,6 +24,9 @@ comments and blank lines are ignored, and **values are never printed**: the
 output only says whether a key is the same, missing, extra, or different.
 The exit code tells CI whether the environments drifted.
 
+The files behind every sample in this README live in [`examples/`](examples/);
+run the commands from that directory to reproduce them.
+
 ## Installation
 
 With Go:
@@ -71,7 +74,10 @@ Environment Drift (keys only)
 Missing in target
   STRIPE_API_KEY
 
-1 difference found
+Extra in target
+  OLD_FEATURE_FLAG
+
+2 differences found
 ```
 
 ### `--format json`
