@@ -211,20 +211,39 @@ $ env-diff .env.staging .env.production --format json
 
 Print nothing and rely on the exit code. Errors are still reported on stderr.
 
-### CI example
+### CI
 
-Fail a pipeline when the production environment is missing a key that the
-example file requires:
+On GitHub, use the action (Linux and macOS runners):
 
 ```yaml
-# GitHub Actions
-- name: Check environment keys
-  run: |
-    go install github.com/blackhorseya/env-diff/cmd/env-diff@latest
-    env-diff .env.example .env.production --keys-only --allow-extra
+- uses: blackhorseya/env-diff@v0.2.0
+  with:
+    files: .env.example .env.production
+    keys-only: "true"
+    allow-extra: "true"
 ```
 
-The same command works in GitLab CI, Makefile targets, or a pre-deploy hook.
+| Input | Default | Meaning |
+|-------|---------|---------|
+| `files` | required | whitespace-separated files; the first is the reference |
+| `keys-only` | `false` | ignore value differences |
+| `allow-extra` | `false` | keys only the targets have are not drift |
+| `ignore` | | comma-separated keys to leave out |
+| `format` | `terminal` | `terminal` or `json` |
+| `version` | the action's ref | release to download, such as `v0.2.0` |
+| `install` | `true` | `false` uses an `env-diff` already on `PATH` |
+| `fail-on-drift` | `true` | `false` lets the step pass on drift; errors still fail it |
+
+Outputs: `exit-code` and `drift` (`true` or `false`), for steps that want to
+decide for themselves.
+
+Anywhere else, install the binary and let the exit code gate the pipeline:
+
+```
+go install github.com/blackhorseya/env-diff/cmd/env-diff@latest
+env-diff .env.example .env.production --keys-only --allow-extra
+```
+
 Flags may appear before or after the file arguments.
 
 ## Security

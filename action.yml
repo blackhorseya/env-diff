@@ -1,0 +1,114 @@
+name: env-diff
+description: Detect configuration drift between .env files without exposing secrets
+author: blackhorseya
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  files:
+    description: Files to compare, separated by whitespace. The first file is the reference; at least two are required.
+    required: true
+  keys-only:
+    description: Compare key presence only and ignore value differences.
+    default: "false"
+  allow-extra:
+    description: Do not count keys that only the targets have as drift.
+    default: "false"
+  ignore:
+    description: Comma-separated keys to leave out of the comparison.
+    default: ""
+  format:
+    description: Output format, terminal or json.
+    default: terminal
+  version:
+    description: env-diff release to install, such as v0.2.0. Defaults to the ref this action was used with.
+    default: ""
+  install:
+    description: Set to "false" to use an env-diff already on PATH instead of downloading a release.
+    default: "true"
+  fail-on-drift:
+    description: Fail the step when differences are found (exit code 1). Errors (exit code 2) always fail the step.
+    default: "true"
+
+outputs:
+  exit-code:
+    description: env-diff exit code, 0 for no differences and 1 for differences found.
+    value: ${{ steps.run.outputs.exit-code }}
+  drift:
+    description: Whether differences were found, "true" or "false".
+    value: ${{ steps.run.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install env-diff
+      if: inputs.install == 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        version="${VERSION:-$ACTION_REF}"
+        if [[ ! "$version" =~ ^v[0-9] ]]; then
+          echo "::error::cannot resolve an env-diff release from '${version}'; set the 'version' input to a release tag such as v0.2.0, or set install to \"false\" and provide env-diff on PATH"
+          exit 2
+        fi
+        case "$RUNNER_OS" in
+          Linux) os=linux ;;
+          macOS) os=darwin ;;
+          *) echo "::error::env-diff releases cover Linux and macOS runners; got $RUNNER_OS"; exit 2 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::env-diff releases cover X64 and ARM64 runners; got $RUNNER_ARCH"; exit 2 ;;
+        esac
+        base="https://github.com/blackhorseya/env-diff/releases/download/${version}"
+        archive="env-diff_${version#v}_${os}_${arch}.tar.gz"
+        dir="${RUNNER_TEMP}/env-diff"
+        mkdir -p "$dir"
+        cd "$dir"
+        curl -fsSL --retry 3 -o "$archive" "${base}/${archive}"
+        curl -fsSL --retry 3 -o checksums.txt "${base}/checksums.txt"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum --ignore-missing -c checksums.txt
+        else
+          shasum -a 256 --ignore-missing -c checksums.txt
+        fi
+        tar -xzf "$archive" env-diff
+        echo "$dir" >> "$GITHUB_PATH"
+        echo "installed env-diff ${version} for ${os}/${arch}"
+
+    - name: Run env-diff
+      id: run
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+        KEYS_ONLY: ${{ inputs.keys-only }}
+        ALLOW_EXTRA: ${{ inputs.allow-extra }}
+        IGNORE: ${{ inputs.ignore }}
+        FORMAT: ${{ inputs.format }}
+        FAIL_ON_DRIFT: ${{ inputs.fail-on-drift }}
+      run: |
+        set -uo pipefail
+        set -f # no globbing while splitting the file list
+        files=()
+        for f in $FILES; do files+=("$f"); done
+        set +f
+        args=()
+        if [[ "$KEYS_ONLY" == "true" ]]; then args+=(--keys-only); fi
+        if [[ "$ALLOW_EXTRA" == "true" ]]; then args+=(--allow-extra); fi
+        if [[ -n "$IGNORE" ]]; then args+=(--ignore "$IGNORE"); fi
+        args+=(--format "$FORMAT")
+        # GitHub runs bash with -e, so capture the exit code without aborting.
+        code=0
+        env-diff "${files[@]}" "${args[@]}" || code=$?
+        echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+        if [[ $code -eq 1 ]]; then drift=true; else drift=false; fi
+        echo "drift=${drift}" >> "$GITHUB_OUTPUT"
+        if [[ $code -eq 1 && "$FAIL_ON_DRIFT" != "true" ]]; then
+          exit 0
+        fi
+        exit "$code"
