@@ -3,7 +3,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/blackhorseya/env-diff/internal/cli"
 )
@@ -12,10 +15,15 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr, cli.Options{
+	// Ctrl-C and SIGTERM cancel the context, which kills any external
+	// program fetching a remote source instead of leaving it orphaned.
+	c, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := cli.Run(c, os.Args[1:], os.Stdout, os.Stderr, cli.Options{
 		Version: version,
 		Color:   colorEnabled(os.Stdout),
-	}))
+	})
+	stop()
+	os.Exit(code)
 }
 
 // colorEnabled reports whether f is an interactive terminal and the user

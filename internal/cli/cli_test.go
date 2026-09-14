@@ -22,7 +22,7 @@ type result struct {
 func run(t *testing.T, args ...string) result {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := Run(args, &stdout, &stderr, Options{Version: "v1.2.3"})
+	code := Run(t.Context(), args, &stdout, &stderr, Options{Version: "v1.2.3"})
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 }
 
@@ -207,9 +207,10 @@ func TestUsageErrors(t *testing.T) {
 		want string
 	}{
 		{"no args", []string{}, "got 0"},
-		{"one arg", []string{a}, "at least two files (<source> <target>...), got 1"},
+		{"one arg", []string{a}, "at least two environments (<source> <target>...), got 1"},
 		{"unknown flag", []string{"--nope", a, a}, "unknown flag"},
 		{"bad format", []string{"--format", "yaml", a, a}, `unknown format "yaml"`},
+		{"unknown scheme", []string{a, "foo://x"}, `foo://x: unknown source scheme "foo"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -276,6 +277,19 @@ func TestFileAndParseErrors(t *testing.T) {
 	}
 }
 
+// TestResolveBeforeLoad checks that every argument is validated before any
+// is read, so a bad scheme is reported even when an earlier file is missing.
+func TestResolveBeforeLoad(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.env")
+	res := run(t, missing, "foo://x")
+	if res.code != exitError {
+		t.Fatalf("exit = %d, want %d", res.code, exitError)
+	}
+	if !strings.Contains(res.stderr, `unknown source scheme "foo"`) || strings.Contains(res.stderr, missing) {
+		t.Errorf("stderr = %q, want the scheme error and not the missing file", res.stderr)
+	}
+}
+
 func TestEmptyFiles(t *testing.T) {
 	empty := write(t, "empty.env", "")
 	comments := write(t, "comments.env", "# nothing here\n\n")
@@ -321,6 +335,7 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"invalid syntax", []string{staging, broken}, "line 1"},
 		{"bad format", []string{"--format", "yaml", staging, production}, "unknown format"},
 		{"usage", []string{staging}, "got 1"},
+		{"unknown scheme", []string{staging, "foo://x"}, `unknown source scheme "foo"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
