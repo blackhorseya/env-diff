@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`env-diff <source> <target>` — a small Go CLI that compares two `.env` files by key and reports drift (missing / extra / different) without ever printing a value. Exit codes 0 no drift, 1 drift, 2 error, so it works as a CI gate. v0.1 is two local files only: no network, no config file, no persistent state, no fixing or syncing, no secret scanning, no Kubernetes/AWS/Vault adapters. When scope is unclear, pick the smaller behaviour. Future remote sources (v0.3) must stay optional adapters outside the compare engine.
+`env-diff <source> <target>` — a small Go CLI that compares two or more `.env` files by key and reports drift (missing / extra / different) without ever printing a value. Exit codes 0 no drift, 1 drift, 2 error, so it works as a CI gate. v0.1 is two local files only: no network, no config file, no persistent state, no fixing or syncing, no secret scanning, no Kubernetes/AWS/Vault adapters. When scope is unclear, pick the smaller behaviour. Future remote sources (v0.3) must stay optional adapters outside the compare engine.
 
 ## Commands
 
@@ -27,9 +27,10 @@ Validate release config: `goreleaser check`. Releases are cut by pushing a `v*` 
 A straight pipeline of four packages under `internal/`, each depending only on the ones before it:
 
 ```
-envfile.ParseFile ×2  → Env       values unexported; String/GoString print only the key count
-diff.Compare          → Result    Same / Missing / Extra / Different, sorted, never nil
-presenter.Terminal | presenter.JSON   key names only
+envfile.ParseFile ×N  → Env       values unexported; String/GoString print only the key count
+diff.Compare          → Result    one Row per key with a Cell per env (present + value group), plus
+                                  Same / Missing / Extra / Different lists; env 0 is the reference
+presenter.Terminal | presenter.JSON   key names only; sections for 2 envs, a matrix for 3+
 cli.Run               → exit code cobra command; drift is app state, every error is exit 2
 ```
 
@@ -39,9 +40,9 @@ cli.Run               → exit code cobra command; drift is app state, every err
 
 - **No value ever reaches output.** Not stdout, not stderr, not an error string, not a test failure message. `envfile.Error` carries `Line` and `Msg` only; duplicate-key errors name the key (keys are printed everywhere anyway) but nothing else from the line. `Env` implements `String` and `GoString` so `%v`, `%+v` and `%#v` cannot leak. `TestNeverPrintsValues` in `internal/cli/cli_test.go` sweeps every output path with a sentinel value **and** asserts the expected key or line number is present, so the check cannot pass vacuously. A new flag, format or error path must be added there.
 - **Parser rules are a contract.** They are pinned by table tests in `envfile_test.go` and documented in README "Supported `.env` syntax"; change both together. The rules most likely to be questioned: `#` starts a comment only at line start, after whitespace, or right after a closing quote (`PASSWORD=abc#123` stays whole); double quotes unescape only `\"` and `\\`; single quotes are literal; duplicate keys, unterminated quotes, text after a closing quote and keys outside `[A-Za-z_][A-Za-z0-9_]*` are errors; a quoted value may span lines (line endings inside it become LF, errors report the assignment's first line); an empty or comment-only file is a valid empty environment; `${VAR}` is literal text. Prefer an explicit error over guessing.
-- **`diff` does not import `envfile`.** `diff.Vars` is a two-method interface declared on the consumer side; `envfile.Env` satisfies it and `diff_test.go` uses a plain map. Keep the comparator free of file and CLI concerns so v0.3 adapters can feed it directly.
+- **`diff` does not import `envfile`.** `diff.Vars` is a two-method interface declared on the consumer side; `envfile.Env` satisfies it and `diff_test.go` uses a plain map. `Compare` takes `[]diff.Environment` and judges presence before values: a key absent from any env is Missing or Extra even if the present copies disagree; the row's cells still carry the value groups (`TestCompareRows`). Group numbers are assigned in env order among present cells, so group 0 is the reference's value only when the reference has the key. Keep the comparator free of file and CLI concerns so v0.3 adapters can feed it directly.
 - **Exit codes 0/1/2** are documented in README and pinned by `TestBinaryExitCodes` (real process) plus the cli tests (in-process). Usage errors (bad args, unknown flag, unknown `--format`) are `*usageError`, which adds the `Run 'env-diff --help'` hint; file and parse errors do not get the hint. `--quiet` silences stdout only; errors still reach stderr.
-- **Output layout is golden-tested** in `presenter_test.go` and `cli_test.go`, and README samples are pasted from real output. Color must never change layout: `TestTerminalColor` strips the ANSI codes and expects byte equality with plain output. JSON lists are always arrays (`orEmpty`), never `null`. `examples/` holds the files behind every README sample; `TestExamples` in `cli_test.go` pins their exact output, so README, `examples/` and that test change together.
+- **Output layout is golden-tested** in `presenter_test.go` and `cli_test.go`, and README samples are pasted from real output. Color must never change layout: `TestTerminalColor` strips the ANSI codes and expects byte equality with plain output for both the sectioned and the matrix form (matrix cells are padded before painting). JSON key lists are always arrays (`orEmpty`), never `null`; inside `matrix`, `null` means the key is absent from that env, and `target` is emitted only for exactly two envs. `examples/` (`.env.staging`, `.env.production`, `.env.qa`, `.env.example`) holds the files behind every README sample; `TestExamples` in `cli_test.go` pins their exact two-file and three-file output, so README, `examples/` and that test change together.
 - **Dependencies**: cobra only, chosen to match `git-why`. Don't add a color, isatty or dotenv library.
 
 ## Testing notes

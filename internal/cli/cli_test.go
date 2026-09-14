@@ -206,8 +206,7 @@ func TestUsageErrors(t *testing.T) {
 		want string
 	}{
 		{"no args", []string{}, "got 0"},
-		{"one arg", []string{a}, "got 1"},
-		{"three args", []string{a, a, a}, "got 3"},
+		{"one arg", []string{a}, "at least two files (<source> <target>...), got 1"},
 		{"unknown flag", []string{"--nope", a, a}, "unknown flag"},
 		{"bad format", []string{"--format", "yaml", a, a}, `unknown format "yaml"`},
 	}
@@ -299,6 +298,7 @@ func TestEmptyFiles(t *testing.T) {
 // show the secret placed in every value.
 func TestNeverPrintsValues(t *testing.T) {
 	staging, production := fixtures(t)
+	qa := write(t, ".env.qa", "DATABASE_URL="+secret+"\nLOG_LEVEL=info\n")
 	dup := write(t, "dup.env", "TOKEN="+secret+"\nTOKEN="+secret+"\n")
 	unterminated := write(t, "unterminated.env", "TOKEN=\""+secret+"\n")
 	broken := write(t, "broken.env", secret+"\n")
@@ -311,6 +311,8 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"json", []string{"--format", "json", staging, production}, "STRIPE_API_KEY"},
 		{"keys only", []string{"--keys-only", staging, production}, "STRIPE_API_KEY"},
 		{"quiet", []string{"--quiet", staging, production}, ""},
+		{"matrix", []string{staging, production, qa}, "STRIPE_API_KEY"},
+		{"matrix json", []string{"--format", "json", staging, production, qa}, "STRIPE_API_KEY"},
 		{"duplicate", []string{staging, dup}, "TOKEN"},
 		{"unterminated quote", []string{unterminated, staging}, "line 1"},
 		{"invalid syntax", []string{staging, broken}, "line 1"},
@@ -385,6 +387,10 @@ func TestExamples(t *testing.T) {
 	want = `{
   "source": ".env.staging",
   "target": ".env.production",
+  "envs": [
+    ".env.staging",
+    ".env.production"
+  ],
   "keys_only": false,
   "drift": true,
   "summary": {
@@ -405,10 +411,114 @@ func TestExamples(t *testing.T) {
   "same": [
     "DATABASE_URL",
     "REDIS_URL"
-  ]
+  ],
+  "matrix": {
+    "DATABASE_URL": [
+      0,
+      0
+    ],
+    "LOG_LEVEL": [
+      0,
+      1
+    ],
+    "OLD_FEATURE_FLAG": [
+      null,
+      0
+    ],
+    "REDIS_URL": [
+      0,
+      0
+    ],
+    "STRIPE_API_KEY": [
+      0,
+      null
+    ]
+  }
 }
 `
 	if res.stdout != want {
 		t.Errorf("json:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
+	sp := func(n int) string { return strings.Repeat(" ", n) }
+	res = run(t, ".env.staging", ".env.production", ".env.qa")
+	if res.code != exitDrift {
+		t.Fatalf("three files: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = "Environment Drift\n" +
+		"\n" +
+		"KEY" + sp(15) + ".env.staging  .env.production  .env.qa\n" +
+		"STRIPE_API_KEY" + sp(4) + "+" + sp(13) + "-" + sp(16) + "+" + sp(8) + "missing in .env.production\n" +
+		"OLD_FEATURE_FLAG" + sp(2) + "-" + sp(13) + "+" + sp(16) + "-" + sp(8) + "extra in .env.production\n" +
+		"LOG_LEVEL" + sp(9) + "a" + sp(13) + "b" + sp(16) + "b" + sp(8) + "different\n" +
+		"\n" +
+		"3 differences found\n"
+	if res.stdout != want {
+		t.Errorf("three files:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
+	res = run(t, ".env.staging", ".env.production", ".env.qa", "--format", "json")
+	if res.code != exitDrift {
+		t.Fatalf("three files json: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = `{
+  "source": ".env.staging",
+  "envs": [
+    ".env.staging",
+    ".env.production",
+    ".env.qa"
+  ],
+  "keys_only": false,
+  "drift": true,
+  "summary": {
+    "same": 2,
+    "missing": 1,
+    "extra": 1,
+    "different": 1
+  },
+  "missing": [
+    "STRIPE_API_KEY"
+  ],
+  "extra": [
+    "OLD_FEATURE_FLAG"
+  ],
+  "different": [
+    "LOG_LEVEL"
+  ],
+  "same": [
+    "DATABASE_URL",
+    "REDIS_URL"
+  ],
+  "matrix": {
+    "DATABASE_URL": [
+      0,
+      0,
+      0
+    ],
+    "LOG_LEVEL": [
+      0,
+      1,
+      1
+    ],
+    "OLD_FEATURE_FLAG": [
+      null,
+      0,
+      null
+    ],
+    "REDIS_URL": [
+      0,
+      0,
+      0
+    ],
+    "STRIPE_API_KEY": [
+      0,
+      null,
+      0
+    ]
+  }
+}
+`
+	if res.stdout != want {
+		t.Errorf("three files json:\n%s\nwant:\n%s", res.stdout, want)
 	}
 }

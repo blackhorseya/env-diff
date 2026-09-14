@@ -66,20 +66,21 @@ type app struct {
 
 func (a *app) command() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "env-diff <source> <target>",
+		Use:   "env-diff <source> <target> [<target>...]",
 		Short: "Detect environment configuration drift without exposing secrets",
-		Long: "Compare two .env files by key, ignoring order, comments and blank lines,\n" +
-			"and report which keys are missing, extra, or have a different value.\n" +
-			"Values are never printed.\n\n" +
+		Long: "Compare .env files by key, ignoring order, comments and blank lines,\n" +
+			"and report which keys are missing, extra, or have a different value\n" +
+			"relative to the first file. Values are never printed.\n\n" +
 			"Exit codes:\n" +
 			"  0  no differences\n" +
 			"  1  differences found\n" +
 			"  2  error (file not found, invalid syntax, bad arguments)",
 		Example: "  env-diff .env.staging .env.production\n" +
 			"  env-diff .env.example .env.production --keys-only\n" +
-			"  env-diff .env.staging .env.production --format json",
+			"  env-diff .env.staging .env.production --format json\n" +
+			"  env-diff .env.dev .env.staging .env.production",
 		Version:           resolveVersion(a.opts.Version),
-		Args:              twoFiles,
+		Args:              atLeastTwoFiles,
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
@@ -95,35 +96,36 @@ func (a *app) command() *cobra.Command {
 	return cmd
 }
 
-func twoFiles(_ *cobra.Command, args []string) error {
-	if len(args) == 2 {
+func atLeastTwoFiles(_ *cobra.Command, args []string) error {
+	if len(args) >= 2 {
 		return nil
 	}
-	return &usageError{err: fmt.Errorf("expected <source> and <target> file arguments, got %d", len(args))}
+	return &usageError{err: fmt.Errorf("expected at least two files (<source> <target>...), got %d", len(args))}
 }
 
 func (a *app) run(cmd *cobra.Command, args []string) error {
 	if a.format != "terminal" && a.format != "json" {
 		return &usageError{err: fmt.Errorf("unknown format %q (want terminal or json)", a.format)}
 	}
-	source, err := envfile.ParseFile(args[0])
-	if err != nil {
-		return err
-	}
-	target, err := envfile.ParseFile(args[1])
-	if err != nil {
-		return err
+	envs := make([]diff.Environment, 0, len(args))
+	for _, path := range args {
+		env, err := envfile.ParseFile(path)
+		if err != nil {
+			return err
+		}
+		envs = append(envs, diff.Environment{Name: path, Vars: env})
 	}
 
-	result := diff.Compare(source, target, a.keysOnly)
+	result := diff.Compare(envs, diff.Options{KeysOnly: a.keysOnly})
 	a.drift = result.HasDrift()
 	if a.quiet {
 		return nil
 	}
 
 	w := cmd.OutOrStdout()
+	var err error
 	if a.format == "json" {
-		err = presenter.JSON(w, result, args[0], args[1])
+		err = presenter.JSON(w, result)
 	} else {
 		err = presenter.Terminal(w, result, a.opts.Color)
 	}
