@@ -83,6 +83,23 @@ Extra in target
 2 differences found
 ```
 
+### `--ignore`
+
+Leave keys out of the comparison, repeatable or comma-separated. The report
+says how many of them existed so a mistyped name is noticed:
+
+```
+$ env-diff .env.staging .env.production --ignore LOG_LEVEL,STRIPE_API_KEY
+
+Environment Drift
+
+Extra in target
+  OLD_FEATURE_FLAG
+
+1 difference found
+2 keys ignored
+```
+
 ### Compare more than two files
 
 With three or more files the report becomes a matrix with one row per
@@ -111,7 +128,8 @@ printed, only which files agree.
 Structured output for automation. `envs` lists the files in order; `matrix`
 maps every key to one entry per file: files with the same number share a
 value, `null` marks the key as absent. `target` is present only when exactly
-two files were compared. The key lists are always arrays, never `null`.
+two files were compared. `ignored` lists the ignored keys that existed. The key lists are always
+arrays, never `null`.
 
 ```
 $ env-diff .env.staging .env.production --format json
@@ -128,7 +146,8 @@ $ env-diff .env.staging .env.production --format json
     "same": 2,
     "missing": 1,
     "extra": 1,
-    "different": 1
+    "different": 1,
+    "ignored": 0
   },
   "missing": [
     "STRIPE_API_KEY"
@@ -143,6 +162,7 @@ $ env-diff .env.staging .env.production --format json
     "DATABASE_URL",
     "REDIS_URL"
   ],
+  "ignored": [],
   "matrix": {
     "DATABASE_URL": [
       0,
