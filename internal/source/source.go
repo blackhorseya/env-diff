@@ -36,7 +36,7 @@ type Resolver struct {
 
 // supportedSchemes is listed in the unknown-scheme error; remote adapters
 // extend it as they are added.
-const supportedSchemes = ", k8s:// or lambda://"
+const supportedSchemes = ", k8s://, lambda:// or ssm://"
 
 var schemeRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$`)
 
@@ -53,6 +53,8 @@ func (x Resolver) Resolve(arg string) (Source, error) {
 		return parseK8s(x, arg, m[2])
 	case "lambda":
 		return parseLambda(x, arg, m[2])
+	case "ssm":
+		return parseSSM(x, arg, m[2])
 	}
 	return nil, &UnknownSchemeError{Arg: arg, Scheme: m[1]}
 }

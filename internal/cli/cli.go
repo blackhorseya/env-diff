@@ -78,7 +78,9 @@ func (a *app) command() *cobra.Command {
 			"Each argument is a .env file or a remote source addressed by URI:\n" +
 			"  k8s://<namespace>/configmap/<name>   read with kubectl\n" +
 			"  k8s://<namespace>/secret/<name>      read with kubectl, base64-decoded\n" +
-			"  lambda://<function>[:<qualifier>]    read with aws (name or ARN)\n\n" +
+			"  lambda://<function>[:<qualifier>]    read with aws (name or ARN)\n" +
+			"  ssm://<path>                         read with aws: the parameters\n" +
+			"                                       directly under <path>, decrypted\n\n" +
 			"Remote sources are read with the CLI already on PATH and its own\n" +
 			"configuration (KUBECONFIG and current context; AWS_PROFILE and\n" +
 			"AWS_REGION). That CLI's stderr is shown as is; env-diff itself never\n" +
@@ -94,7 +96,8 @@ func (a *app) command() *cobra.Command {
 			"  env-diff .env.staging .env.production --ignore DEBUG,LOCAL_PORT\n" +
 			"  env-diff .env.production k8s://prod/configmap/app\n" +
 			"  env-diff .env.example k8s://prod/secret/app --keys-only --allow-extra\n" +
-			"  env-diff .env.production lambda://my-function:prod",
+			"  env-diff .env.production lambda://my-function:prod\n" +
+			"  env-diff .env.production ssm:///app/prod",
 		Version:           resolveVersion(a.opts.Version),
 		Args:              atLeastTwoFiles,
 		SilenceUsage:      true,

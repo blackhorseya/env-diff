@@ -237,7 +237,7 @@ func TestHelpAndVersion(t *testing.T) {
 		if res.code != exitOK || res.stderr != "" {
 			t.Errorf("%s: exit = %d, stderr = %q", flag, res.code, res.stderr)
 		}
-		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:", "k8s://<namespace>/configmap/<name>", "k8s://<namespace>/secret/<name>", "lambda://<function>"} {
+		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:", "k8s://<namespace>/configmap/<name>", "k8s://<namespace>/secret/<name>", "lambda://<function>", "ssm://<path>"} {
 			if !strings.Contains(res.stdout, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", flag, want, res.stdout)
 			}
@@ -375,9 +375,11 @@ func TestNeverPrintsValues(t *testing.T) {
 			"get secret bad -n prod -o json":      `{"data":{"TOKEN":"` + secret + `!"}}`,
 		}),
 		"aws": cliScript("aws", map[string]string{
-			"lambda get-function-configuration --function-name fn --output json":     `{"Environment":{"Variables":{"DATABASE_URL":"` + secret + `","TOKEN":"` + secret + `"}}}`,
-			"lambda get-function-configuration --function-name locked --output json": `{"Environment":{"Variables":{},"Error":{"ErrorCode":"AccessDeniedException","Message":"` + secret + `"}}}`,
-			"lambda get-function-configuration --function-name noisy --output json":  `Traceback: ` + secret,
+			"lambda get-function-configuration --function-name fn --output json":          `{"Environment":{"Variables":{"DATABASE_URL":"` + secret + `","TOKEN":"` + secret + `"}}}`,
+			"lambda get-function-configuration --function-name locked --output json":      `{"Environment":{"Variables":{},"Error":{"ErrorCode":"AccessDeniedException","Message":"` + secret + `"}}}`,
+			"lambda get-function-configuration --function-name noisy --output json":       `Traceback: ` + secret,
+			"ssm get-parameters-by-path --path /app/prod --with-decryption --output json": `{"Parameters":[{"Name":"/app/prod/DATABASE_URL","Type":"SecureString","Value":"` + secret + `"},{"Name":"/app/prod/TOKEN","Type":"SecureString","Value":"` + secret + `"}]}`,
+			"ssm get-parameters-by-path --path /noisy --with-decryption --output json":    `Traceback: ` + secret,
 		}),
 	})
 	tests := []struct {
@@ -394,6 +396,9 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"lambda json", []string{"--format", "json", "lambda://fn", "k8s://prod/secret/app"}, "TOKEN"},
 		{"lambda decrypt error", []string{staging, "lambda://locked"}, "AccessDeniedException"},
 		{"aws output not json", []string{staging, "lambda://noisy"}, "not valid JSON"},
+		{"ssm", []string{staging, "ssm:///app/prod"}, "TOKEN"},
+		{"ssm json", []string{"--format", "json", "ssm:///app/prod", "lambda://fn"}, "TOKEN"},
+		{"ssm output not json", []string{staging, "ssm:///noisy"}, "not valid JSON"},
 		{"terminal", []string{staging, production}, "STRIPE_API_KEY"},
 		{"json", []string{"--format", "json", staging, production}, "STRIPE_API_KEY"},
 		{"keys only", []string{"--keys-only", staging, production}, "STRIPE_API_KEY"},
@@ -726,6 +731,43 @@ func TestLambdaSources(t *testing.T) {
 		fakeCLI(t, "aws", `echo "must not run" >&2; exit 9`)
 		res := run(t, staging, "lambda://")
 		want := "env-diff: lambda://: want lambda://<function>[:<qualifier>]\nRun 'env-diff --help' for usage.\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
+}
+
+func TestSSMSources(t *testing.T) {
+	staging, _ := fixtures(t)
+	empty := write(t, "empty.env", "")
+	fakeCLI(t, "aws", cliScript("aws", map[string]string{
+		"ssm get-parameters-by-path --path /app/prod --with-decryption --output json": `{"Parameters":[` +
+			`{"Name":"/app/prod/DATABASE_URL","Type":"SecureString","Value":"postgres://user:` + secret + `@db/app","Version":2},` +
+			`{"Name":"/app/prod/LOG_LEVEL","Type":"String","Value":"info","Version":1},` +
+			`{"Name":"/app/prod/REDIS_URL","Type":"String","Value":"redis://cache","Version":1}]}`,
+		"ssm get-parameters-by-path --path / --with-decryption --output json": `{"Parameters":[]}`,
+	}))
+
+	want := "Environment Drift\n\nMissing in target\n  STRIPE_API_KEY\n\nDifferent values\n  LOG_LEVEL\n\n2 differences found\n"
+	for _, arg := range []string{"ssm:///app/prod", "ssm://app/prod", "ssm:///app/prod/"} {
+		res := run(t, staging, arg)
+		if res.code != exitDrift {
+			t.Fatalf("%s: exit = %d, stderr:\n%s", arg, res.code, res.stderr)
+		}
+		if res.stdout != want || res.stderr != "" {
+			t.Errorf("%s: stdout:\n%s\nwant:\n%s\nstderr: %q", arg, res.stdout, want, res.stderr)
+		}
+	}
+
+	res := run(t, empty, "ssm://")
+	if res.code != exitOK || res.stdout != "Environment Drift\n\nNo differences found\n" {
+		t.Errorf("empty root: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+
+	t.Run("bad shape is a usage error", func(t *testing.T) {
+		fakeCLI(t, "aws", `echo "must not run" >&2; exit 9`)
+		res := run(t, staging, "ssm://app//prod")
+		want := "env-diff: ssm://app//prod: want ssm://<path> such as ssm:///app/prod\nRun 'env-diff --help' for usage.\n"
 		if res.code != exitError || res.stderr != want {
 			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
 		}
