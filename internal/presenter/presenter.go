@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/blackhorseya/env-diff/internal/diff"
@@ -31,7 +32,9 @@ func (p painter) paint(code, s string) string {
 	return code + s + ansiReset
 }
 
-// Terminal writes a human-readable report. Only key names are listed.
+// Terminal writes a human-readable report. Only key names are listed. Two
+// environments are reported as sections; three or more as a matrix with
+// one row per drifted key.
 func Terminal(w io.Writer, r diff.Result, color bool) error {
 	p := painter(color)
 	var b strings.Builder
@@ -42,16 +45,18 @@ func Terminal(w io.Writer, r diff.Result, color bool) error {
 	}
 	b.WriteString(p.paint(ansiBold, title) + "\n")
 
-	if !r.HasDrift() {
+	switch {
+	case !r.HasDrift():
 		b.WriteString("\n" + p.paint(ansiGreen, "No differences found") + "\n")
-		_, err := io.WriteString(w, b.String())
-		return err
+	case len(r.Envs) > 2:
+		matrix(&b, p, r)
+		b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
+	default:
+		section(&b, p, ansiRed, "Missing in target", r.Missing)
+		section(&b, p, ansiYellow, "Extra in target", r.Extra)
+		section(&b, p, ansiCyan, "Different values", r.Different)
+		b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
 	}
-
-	section(&b, p, ansiRed, "Missing in target", r.Missing)
-	section(&b, p, ansiYellow, "Extra in target", r.Extra)
-	section(&b, p, ansiCyan, "Different values", r.Different)
-	b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
 
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -67,6 +72,100 @@ func section(b *strings.Builder, p painter, code, title string, keys []string) {
 	}
 }
 
+// matrix writes one row per drifted key, ordered missing, extra, different,
+// with a column per environment. Cells are padded before any color is
+// applied so escape codes never disturb the alignment.
+func matrix(b *strings.Builder, p painter, r diff.Result) {
+	var rows []diff.Row
+	for _, status := range []diff.Status{diff.Missing, diff.Extra, diff.Different} {
+		for _, row := range r.Rows {
+			if row.Status == status {
+				rows = append(rows, row)
+			}
+		}
+	}
+
+	cells := make([][]string, len(rows))
+	keyWidth := len("KEY")
+	widths := make([]int, len(r.Envs))
+	for i, name := range r.Envs {
+		widths[i] = len(name)
+	}
+	for i, row := range rows {
+		keyWidth = max(keyWidth, len(row.Key))
+		cells[i] = make([]string, len(row.Cells))
+		for j, c := range row.Cells {
+			cells[i][j] = symbol(row, c)
+			widths[j] = max(widths[j], len(cells[i][j]))
+		}
+	}
+
+	header := pad("KEY", keyWidth)
+	for i, name := range r.Envs {
+		header += "  " + pad(name, widths[i])
+	}
+	b.WriteString("\n" + p.paint(ansiBold, strings.TrimRight(header, " ")) + "\n")
+	for i, row := range rows {
+		line := pad(row.Key, keyWidth)
+		for j, cell := range cells[i] {
+			line += "  " + pad(cell, widths[j])
+		}
+		b.WriteString(line + "  " + p.paint(statusColor(row.Status), statusText(row, r.Envs)) + "\n")
+	}
+}
+
+// symbol renders one cell: "-" when absent, "+" when present, or a group
+// letter when the row's present values disagree.
+func symbol(row diff.Row, c diff.Cell) string {
+	switch {
+	case !c.Present:
+		return "-"
+	case row.Groups() < 2:
+		return "+"
+	case c.Group < 26:
+		return string(rune('a' + c.Group))
+	default:
+		return strconv.Itoa(c.Group)
+	}
+}
+
+func statusText(row diff.Row, envs []string) string {
+	var names []string
+	switch row.Status {
+	case diff.Missing:
+		for i, c := range row.Cells {
+			if !c.Present {
+				names = append(names, envs[i])
+			}
+		}
+		return "missing in " + strings.Join(names, ", ")
+	case diff.Extra:
+		for i, c := range row.Cells {
+			if c.Present {
+				names = append(names, envs[i])
+			}
+		}
+		return "extra in " + strings.Join(names, ", ")
+	}
+	return row.Status.String()
+}
+
+func statusColor(s diff.Status) string {
+	switch s {
+	case diff.Missing:
+		return ansiRed
+	case diff.Extra:
+		return ansiYellow
+	case diff.Different:
+		return ansiCyan
+	}
+	return ansiGreen
+}
+
+func pad(s string, width int) string {
+	return s + strings.Repeat(" ", max(0, width-len(s)))
+}
+
 func plural(n int, noun string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, noun)
@@ -75,15 +174,17 @@ func plural(n int, noun string) string {
 }
 
 type report struct {
-	Source    string   `json:"source"`
-	Target    string   `json:"target"`
-	KeysOnly  bool     `json:"keys_only"`
-	Drift     bool     `json:"drift"`
-	Summary   summary  `json:"summary"`
-	Missing   []string `json:"missing"`
-	Extra     []string `json:"extra"`
-	Different []string `json:"different"`
-	Same      []string `json:"same"`
+	Source    string            `json:"source"`
+	Target    string            `json:"target,omitempty"`
+	Envs      []string          `json:"envs"`
+	KeysOnly  bool              `json:"keys_only"`
+	Drift     bool              `json:"drift"`
+	Summary   summary           `json:"summary"`
+	Missing   []string          `json:"missing"`
+	Extra     []string          `json:"extra"`
+	Different []string          `json:"different"`
+	Same      []string          `json:"same"`
+	Matrix    map[string][]*int `json:"matrix"`
 }
 
 type summary struct {
@@ -93,14 +194,13 @@ type summary struct {
 	Different int `json:"different"`
 }
 
-// JSON writes a machine-readable report. Key lists are always arrays,
-// never null, so consumers can index them without a nil check.
-func JSON(w io.Writer, r diff.Result, source, target string) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(report{
-		Source:   source,
-		Target:   target,
+// JSON writes a machine-readable report. Key lists are always arrays, never
+// null. "matrix" maps every key to one entry per environment: the value
+// group number, or null where the key is absent. "target" is present only
+// when exactly two environments were compared.
+func JSON(w io.Writer, r diff.Result) error {
+	rep := report{
+		Envs:     orEmpty(r.Envs),
 		KeysOnly: r.KeysOnly,
 		Drift:    r.HasDrift(),
 		Summary: summary{
@@ -113,7 +213,26 @@ func JSON(w io.Writer, r diff.Result, source, target string) error {
 		Extra:     orEmpty(r.Extra),
 		Different: orEmpty(r.Different),
 		Same:      orEmpty(r.Same),
-	})
+		Matrix:    map[string][]*int{},
+	}
+	if len(r.Envs) > 0 {
+		rep.Source = r.Envs[0]
+	}
+	if len(r.Envs) == 2 {
+		rep.Target = r.Envs[1]
+	}
+	for _, row := range r.Rows {
+		groups := make([]*int, len(row.Cells))
+		for i, c := range row.Cells {
+			if c.Present {
+				groups[i] = new(c.Group)
+			}
+		}
+		rep.Matrix[row.Key] = groups
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rep)
 }
 
 func orEmpty(s []string) []string {

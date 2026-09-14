@@ -1,7 +1,12 @@
-// Package diff compares two environments key by key, ignoring file order.
+// Package diff compares two or more environments key by key, ignoring file
+// order. The first environment is the reference the others are judged
+// against.
 package diff
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // Vars is the read-only view of an environment that Compare needs.
 type Vars interface {
@@ -11,13 +16,76 @@ type Vars interface {
 	Lookup(key string) (string, bool)
 }
 
-// Result classifies every key from both environments. Each slice is sorted
-// and never nil. Values are not retained.
+// Environment is a named set of variables, usually one file.
+type Environment struct {
+	Name string
+	Vars Vars
+}
+
+// Options tunes how keys are classified.
+type Options struct {
+	// KeysOnly ignores values: a key present everywhere is Same.
+	KeysOnly bool
+}
+
+// Status classifies one key across all environments.
+type Status int
+
+// Statuses, in the order the terminal report lists them.
+const (
+	Same      Status = iota // present everywhere with equal values
+	Missing                 // present in the reference, absent from another
+	Extra                   // absent from the reference, present in another
+	Different               // present everywhere, values not all equal
+)
+
+func (s Status) String() string {
+	switch s {
+	case Same:
+		return "same"
+	case Missing:
+		return "missing"
+	case Extra:
+		return "extra"
+	case Different:
+		return "different"
+	}
+	return "unknown"
+}
+
+// Cell is one key in one environment. Present cells with equal values share
+// a Group number, assigned in environment order starting at 0; an absent
+// cell has Group -1.
+type Cell struct {
+	Present bool
+	Group   int
+}
+
+// Row is one key across all environments, cells in environment order.
+type Row struct {
+	Key    string
+	Status Status
+	Cells  []Cell
+}
+
+// Groups returns how many distinct values the present cells hold.
+func (x Row) Groups() int {
+	n := 0
+	for _, c := range x.Cells {
+		n = max(n, c.Group+1)
+	}
+	return n
+}
+
+// Result classifies every key from every environment. Rows and the status
+// lists are sorted by key and never nil. Values are not retained.
 type Result struct {
-	Same      []string // in both with equal values, or in both when KeysOnly
-	Missing   []string // in source only
-	Extra     []string // in target only
-	Different []string // in both with unequal values; always empty when KeysOnly
+	Envs      []string // names in input order; Envs[0] is the reference
+	Rows      []Row    // every key
+	Same      []string
+	Missing   []string
+	Extra     []string
+	Different []string
 	KeysOnly  bool
 }
 
@@ -31,32 +99,74 @@ func (x Result) HasDrift() bool {
 	return x.Count() > 0
 }
 
-// Compare classifies the keys of source against target. With keysOnly,
-// values are ignored and a key present in both is reported as Same.
-func Compare(source, target Vars, keysOnly bool) Result {
+// Compare classifies the keys of envs against the first environment.
+// Presence is judged before values: a key absent somewhere is Missing or
+// Extra even if the present values also disagree; its cells still show the
+// value groups.
+func Compare(envs []Environment, opts Options) Result {
 	r := Result{
+		Envs:      make([]string, 0, len(envs)),
+		Rows:      []Row{},
 		Same:      []string{},
 		Missing:   []string{},
 		Extra:     []string{},
 		Different: []string{},
-		KeysOnly:  keysOnly,
+		KeysOnly:  opts.KeysOnly,
 	}
-	for _, key := range slices.Sorted(slices.Values(source.Keys())) {
-		sv, _ := source.Lookup(key)
-		tv, ok := target.Lookup(key)
-		switch {
-		case !ok:
-			r.Missing = append(r.Missing, key)
-		case keysOnly || sv == tv:
+	keys := map[string]struct{}{}
+	for _, e := range envs {
+		r.Envs = append(r.Envs, e.Name)
+		for _, k := range e.Vars.Keys() {
+			keys[k] = struct{}{}
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		row := classify(key, envs, opts.KeysOnly)
+		r.Rows = append(r.Rows, row)
+		switch row.Status {
+		case Same:
 			r.Same = append(r.Same, key)
-		default:
+		case Missing:
+			r.Missing = append(r.Missing, key)
+		case Extra:
+			r.Extra = append(r.Extra, key)
+		case Different:
 			r.Different = append(r.Different, key)
 		}
 	}
-	for _, key := range slices.Sorted(slices.Values(target.Keys())) {
-		if _, ok := source.Lookup(key); !ok {
-			r.Extra = append(r.Extra, key)
-		}
-	}
 	return r
+}
+
+func classify(key string, envs []Environment, keysOnly bool) Row {
+	row := Row{Key: key, Cells: make([]Cell, len(envs))}
+	groups := map[string]int{} // value -> group; lives only for this call
+	present := 0
+	for i, e := range envs {
+		v, ok := e.Vars.Lookup(key)
+		if !ok {
+			row.Cells[i] = Cell{Group: -1}
+			continue
+		}
+		present++
+		if keysOnly {
+			v = ""
+		}
+		g, seen := groups[v]
+		if !seen {
+			g = len(groups)
+			groups[v] = g
+		}
+		row.Cells[i] = Cell{Present: true, Group: g}
+	}
+	switch {
+	case present == len(envs) && len(groups) <= 1:
+		row.Status = Same
+	case present == len(envs):
+		row.Status = Different
+	case len(envs) > 0 && row.Cells[0].Present:
+		row.Status = Missing
+	default:
+		row.Status = Extra
+	}
+	return row
 }

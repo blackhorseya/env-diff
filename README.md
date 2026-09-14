@@ -19,7 +19,7 @@ Different values
 3 differences found
 ```
 
-`env-diff` compares two `.env` files **by key**, not by line. Variable order,
+`env-diff` compares two or more `.env` files **by key**, not by line. Variable order,
 comments and blank lines are ignored, and **values are never printed**: the
 output only says whether a key is the same, missing, extra, or different.
 The exit code tells CI whether the environments drifted.
@@ -41,17 +41,20 @@ Or download a binary for macOS or Linux from the
 ## Usage
 
 ```
-env-diff <source> <target> [flags]
+env-diff <source> <target> [<target>...] [flags]
 ```
 
-Every key is classified relative to the **source**:
+Every key is classified relative to the **source**, the first file:
 
-| Status    | Meaning                                        |
-|-----------|------------------------------------------------|
-| same      | present in both files with the same value      |
-| missing   | present in source, absent from target          |
-| extra     | absent from source, present in target          |
-| different | present in both files with a different value   |
+| Status    | Meaning                                            |
+|-----------|----------------------------------------------------|
+| same      | present in every file with the same value          |
+| missing   | present in source, absent from a target            |
+| extra     | absent from source, present in a target            |
+| different | present in every file, values not all the same     |
+
+Presence is judged before values: a key absent from one target is
+*missing* even if the remaining copies also disagree.
 
 ### Exit codes
 
@@ -80,15 +83,45 @@ Extra in target
 2 differences found
 ```
 
+### Compare more than two files
+
+With three or more files the report becomes a matrix with one row per
+drifted key and one column per file:
+
+```
+$ env-diff .env.staging .env.production .env.qa
+
+Environment Drift
+
+KEY               .env.staging  .env.production  .env.qa
+STRIPE_API_KEY    +             -                +        missing in .env.production
+OLD_FEATURE_FLAG  -             +                -        extra in .env.production
+LOG_LEVEL         a             b                b        different
+
+3 differences found
+```
+
+`+` means the key is present, `-` absent. When a row's values disagree the
+present cells show a letter instead, and files sharing a letter share a
+value, so `a b b` above says staging is the odd one out. No value is
+printed, only which files agree.
+
 ### `--format json`
 
-Structured output for automation. Lists are always arrays, never `null`.
+Structured output for automation. `envs` lists the files in order; `matrix`
+maps every key to one entry per file: files with the same number share a
+value, `null` marks the key as absent. `target` is present only when exactly
+two files were compared. The key lists are always arrays, never `null`.
 
 ```
 $ env-diff .env.staging .env.production --format json
 {
   "source": ".env.staging",
   "target": ".env.production",
+  "envs": [
+    ".env.staging",
+    ".env.production"
+  ],
   "keys_only": false,
   "drift": true,
   "summary": {
@@ -109,7 +142,29 @@ $ env-diff .env.staging .env.production --format json
   "same": [
     "DATABASE_URL",
     "REDIS_URL"
-  ]
+  ],
+  "matrix": {
+    "DATABASE_URL": [
+      0,
+      0
+    ],
+    "LOG_LEVEL": [
+      0,
+      1
+    ],
+    "OLD_FEATURE_FLAG": [
+      null,
+      0
+    ],
+    "REDIS_URL": [
+      0,
+      0
+    ],
+    "STRIPE_API_KEY": [
+      0,
+      null
+    ]
+  }
 }
 ```
 
