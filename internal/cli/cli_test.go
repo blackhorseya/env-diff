@@ -187,7 +187,7 @@ func TestHelpAndVersion(t *testing.T) {
 		if res.code != exitOK || res.stderr != "" {
 			t.Errorf("%s: exit = %d, stderr = %q", flag, res.code, res.stderr)
 		}
-		for _, want := range []string{"Usage:", "--keys-only", "--ignore", "--format", "--quiet", "Exit codes:"} {
+		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:"} {
 			if !strings.Contains(res.stdout, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", flag, want, res.stdout)
 			}
@@ -315,6 +315,7 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"matrix", []string{staging, production, qa}, "STRIPE_API_KEY"},
 		{"matrix json", []string{"--format", "json", staging, production, qa}, "STRIPE_API_KEY"},
 		{"ignore", []string{"--ignore", "STRIPE_API_KEY,LOG_LEVEL", staging, production}, "OLD_FEATURE_FLAG"},
+		{"allow extra", []string{"--allow-extra", staging, production}, "STRIPE_API_KEY"},
 		{"duplicate", []string{staging, dup}, "TOKEN"},
 		{"unterminated quote", []string{unterminated, staging}, "line 1"},
 		{"invalid syntax", []string{staging, broken}, "line 1"},
@@ -378,6 +379,15 @@ func TestExamples(t *testing.T) {
 		t.Errorf("example vs production --keys-only:\n%s\nwant:\n%s", res.stdout, want)
 	}
 
+	res = run(t, ".env.example", ".env.production", "--keys-only", "--allow-extra")
+	if res.code != exitDrift {
+		t.Fatalf("validate: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = "Environment Drift (keys only)\n\nMissing in target\n  STRIPE_API_KEY\n\n1 difference found\n1 extra key allowed\n"
+	if res.stdout != want {
+		t.Errorf("validate:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
 	if res = run(t, ".env.example", ".env.staging", "--keys-only"); res.code != exitOK {
 		t.Errorf("example vs staging --keys-only: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
 	}
@@ -394,6 +404,7 @@ func TestExamples(t *testing.T) {
     ".env.production"
   ],
   "keys_only": false,
+  "allow_extra": false,
   "drift": true,
   "summary": {
     "same": 2,
@@ -482,6 +493,7 @@ func TestExamples(t *testing.T) {
     ".env.qa"
   ],
   "keys_only": false,
+  "allow_extra": false,
   "drift": true,
   "summary": {
     "same": 2,
@@ -577,5 +589,29 @@ func TestIgnore(t *testing.T) {
 	}
 	if !slices.Equal(got.Ignored, []string{"LOG_LEVEL"}) || len(got.Different) != 0 {
 		t.Errorf("json ignored = %v, different = %v", got.Ignored, got.Different)
+	}
+}
+
+func TestAllowExtra(t *testing.T) {
+	staging, production := fixtures(t)
+	res := run(t, "--allow-extra", staging, production)
+	if res.code != exitDrift {
+		t.Fatalf("exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	if strings.Contains(res.stdout, "OLD_FEATURE_FLAG") || !strings.HasSuffix(res.stdout, "2 differences found\n1 extra key allowed\n") {
+		t.Errorf("stdout:\n%s", res.stdout)
+	}
+
+	base := write(t, "base.env", "A=1\n")
+	more := write(t, "more.env", "A=1\nB=2\n")
+	if res := run(t, base, more); res.code != exitDrift {
+		t.Errorf("without flag: exit = %d, want %d", res.code, exitDrift)
+	}
+	res = run(t, "--allow-extra", base, more)
+	if res.code != exitOK || res.stdout != "Environment Drift\n\nNo differences found\n1 extra key allowed\n" {
+		t.Errorf("with flag: exit = %d\n%s", res.code, res.stdout)
+	}
+	if res := run(t, "--allow-extra", more, base); res.code != exitDrift {
+		t.Errorf("missing keys must still fail: exit = %d", res.code)
 	}
 }

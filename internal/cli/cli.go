@@ -57,12 +57,13 @@ func Run(args []string, stdout, stderr io.Writer, opts Options) int {
 }
 
 type app struct {
-	opts     Options
-	keysOnly bool
-	ignore   []string
-	format   string
-	quiet    bool
-	drift    bool // set by run once the comparison is done
+	opts       Options
+	keysOnly   bool
+	allowExtra bool
+	ignore     []string
+	format     string
+	quiet      bool
+	drift      bool // set by run once the comparison is done
 }
 
 func (a *app) command() *cobra.Command {
@@ -77,7 +78,7 @@ func (a *app) command() *cobra.Command {
 			"  1  differences found\n" +
 			"  2  error (file not found, invalid syntax, bad arguments)",
 		Example: "  env-diff .env.staging .env.production\n" +
-			"  env-diff .env.example .env.production --keys-only\n" +
+			"  env-diff .env.example .env.production --keys-only --allow-extra\n" +
 			"  env-diff .env.staging .env.production --format json\n" +
 			"  env-diff .env.dev .env.staging .env.production\n" +
 			"  env-diff .env.staging .env.production --ignore DEBUG,LOCAL_PORT",
@@ -89,6 +90,7 @@ func (a *app) command() *cobra.Command {
 		RunE:              a.run,
 	}
 	cmd.Flags().BoolVar(&a.keysOnly, "keys-only", false, "compare key presence only; ignore value differences")
+	cmd.Flags().BoolVar(&a.allowExtra, "allow-extra", false, "do not count keys that only the targets have as drift")
 	cmd.Flags().StringSliceVar(&a.ignore, "ignore", nil, "keys to leave out of the comparison (repeatable or comma-separated)")
 	cmd.Flags().StringVar(&a.format, "format", "terminal", "output format: terminal or json")
 	cmd.Flags().BoolVar(&a.quiet, "quiet", false, "print nothing; rely on the exit code")
@@ -119,7 +121,7 @@ func (a *app) run(cmd *cobra.Command, args []string) error {
 		envs = append(envs, diff.Environment{Name: path, Vars: env})
 	}
 
-	result := diff.Compare(envs, diff.Options{KeysOnly: a.keysOnly, Ignore: a.ignore})
+	result := diff.Compare(envs, diff.Options{KeysOnly: a.keysOnly, AllowExtra: a.allowExtra, Ignore: a.ignore})
 	a.drift = result.HasDrift()
 	if a.quiet {
 		return nil
