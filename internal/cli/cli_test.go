@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -186,7 +187,7 @@ func TestHelpAndVersion(t *testing.T) {
 		if res.code != exitOK || res.stderr != "" {
 			t.Errorf("%s: exit = %d, stderr = %q", flag, res.code, res.stderr)
 		}
-		for _, want := range []string{"Usage:", "--keys-only", "--format", "--quiet", "Exit codes:"} {
+		for _, want := range []string{"Usage:", "--keys-only", "--ignore", "--format", "--quiet", "Exit codes:"} {
 			if !strings.Contains(res.stdout, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", flag, want, res.stdout)
 			}
@@ -313,6 +314,7 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"quiet", []string{"--quiet", staging, production}, ""},
 		{"matrix", []string{staging, production, qa}, "STRIPE_API_KEY"},
 		{"matrix json", []string{"--format", "json", staging, production, qa}, "STRIPE_API_KEY"},
+		{"ignore", []string{"--ignore", "STRIPE_API_KEY,LOG_LEVEL", staging, production}, "OLD_FEATURE_FLAG"},
 		{"duplicate", []string{staging, dup}, "TOKEN"},
 		{"unterminated quote", []string{unterminated, staging}, "line 1"},
 		{"invalid syntax", []string{staging, broken}, "line 1"},
@@ -397,7 +399,8 @@ func TestExamples(t *testing.T) {
     "same": 2,
     "missing": 1,
     "extra": 1,
-    "different": 1
+    "different": 1,
+    "ignored": 0
   },
   "missing": [
     "STRIPE_API_KEY"
@@ -412,6 +415,7 @@ func TestExamples(t *testing.T) {
     "DATABASE_URL",
     "REDIS_URL"
   ],
+  "ignored": [],
   "matrix": {
     "DATABASE_URL": [
       0,
@@ -438,6 +442,15 @@ func TestExamples(t *testing.T) {
 `
 	if res.stdout != want {
 		t.Errorf("json:\n%s\nwant:\n%s", res.stdout, want)
+	}
+
+	res = run(t, ".env.staging", ".env.production", "--ignore", "LOG_LEVEL,STRIPE_API_KEY")
+	if res.code != exitDrift {
+		t.Fatalf("ignore: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want = "Environment Drift\n\nExtra in target\n  OLD_FEATURE_FLAG\n\n1 difference found\n2 keys ignored\n"
+	if res.stdout != want {
+		t.Errorf("ignore:\n%s\nwant:\n%s", res.stdout, want)
 	}
 
 	sp := func(n int) string { return strings.Repeat(" ", n) }
@@ -474,7 +487,8 @@ func TestExamples(t *testing.T) {
     "same": 2,
     "missing": 1,
     "extra": 1,
-    "different": 1
+    "different": 1,
+    "ignored": 0
   },
   "missing": [
     "STRIPE_API_KEY"
@@ -489,6 +503,7 @@ func TestExamples(t *testing.T) {
     "DATABASE_URL",
     "REDIS_URL"
   ],
+  "ignored": [],
   "matrix": {
     "DATABASE_URL": [
       0,
@@ -520,5 +535,47 @@ func TestExamples(t *testing.T) {
 `
 	if res.stdout != want {
 		t.Errorf("three files json:\n%s\nwant:\n%s", res.stdout, want)
+	}
+}
+
+func TestIgnore(t *testing.T) {
+	staging, production := fixtures(t)
+	for _, args := range [][]string{
+		{"--ignore", "STRIPE_API_KEY,LOG_LEVEL,OLD_FEATURE_FLAG", staging, production},
+		{"--ignore", "STRIPE_API_KEY", "--ignore", "LOG_LEVEL", "--ignore=OLD_FEATURE_FLAG", staging, production},
+		{staging, production, "--ignore", "LOG_LEVEL", "--ignore", "STRIPE_API_KEY,OLD_FEATURE_FLAG"},
+	} {
+		res := run(t, args...)
+		if res.code != exitOK {
+			t.Errorf("%v: exit = %d\n%s%s", args, res.code, res.stdout, res.stderr)
+		}
+		if want := "Environment Drift\n\nNo differences found\n3 keys ignored\n"; res.stdout != want {
+			t.Errorf("%v: stdout =\n%s\nwant:\n%s", args, res.stdout, want)
+		}
+	}
+
+	res := run(t, "--ignore", "LOG_LEVEL", staging, production)
+	if res.code != exitDrift || !strings.HasSuffix(res.stdout, "2 differences found\n1 key ignored\n") {
+		t.Errorf("partial ignore: exit = %d\n%s", res.code, res.stdout)
+	}
+	if strings.Contains(res.stdout, "LOG_LEVEL") {
+		t.Errorf("ignored key listed:\n%s", res.stdout)
+	}
+
+	res = run(t, "--ignore", "NOT_A_KEY", staging, staging)
+	if res.code != exitOK || !strings.HasSuffix(res.stdout, "0 keys ignored\n") {
+		t.Errorf("unmatched ignore: exit = %d\n%s", res.code, res.stdout)
+	}
+
+	res = run(t, "--ignore", "LOG_LEVEL", "--format", "json", staging, production)
+	var got struct {
+		Ignored   []string `json:"ignored"`
+		Different []string `json:"different"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Ignored, []string{"LOG_LEVEL"}) || len(got.Different) != 0 {
+		t.Errorf("json ignored = %v, different = %v", got.Ignored, got.Different)
 	}
 }

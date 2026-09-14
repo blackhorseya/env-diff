@@ -40,7 +40,7 @@ func Terminal(w io.Writer, r diff.Result, color bool) error {
 	var b strings.Builder
 
 	title := "Environment Drift"
-	if r.KeysOnly {
+	if r.Options.KeysOnly {
 		title += " (keys only)"
 	}
 	b.WriteString(p.paint(ansiBold, title) + "\n")
@@ -56,6 +56,11 @@ func Terminal(w io.Writer, r diff.Result, color bool) error {
 		section(&b, p, ansiYellow, "Extra in target", r.Extra)
 		section(&b, p, ansiCyan, "Different values", r.Different)
 		b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
+	}
+	// Report the ignore count whenever --ignore was given, so a name that
+	// matched nothing is visible rather than silently inert.
+	if len(r.Options.Ignore) > 0 {
+		b.WriteString(plural(len(r.Ignored), "key") + " ignored\n")
 	}
 
 	_, err := io.WriteString(w, b.String())
@@ -184,6 +189,7 @@ type report struct {
 	Extra     []string          `json:"extra"`
 	Different []string          `json:"different"`
 	Same      []string          `json:"same"`
+	Ignored   []string          `json:"ignored"`
 	Matrix    map[string][]*int `json:"matrix"`
 }
 
@@ -192,6 +198,7 @@ type summary struct {
 	Missing   int `json:"missing"`
 	Extra     int `json:"extra"`
 	Different int `json:"different"`
+	Ignored   int `json:"ignored"`
 }
 
 // JSON writes a machine-readable report. Key lists are always arrays, never
@@ -201,18 +208,20 @@ type summary struct {
 func JSON(w io.Writer, r diff.Result) error {
 	rep := report{
 		Envs:     orEmpty(r.Envs),
-		KeysOnly: r.KeysOnly,
+		KeysOnly: r.Options.KeysOnly,
 		Drift:    r.HasDrift(),
 		Summary: summary{
 			Same:      len(r.Same),
 			Missing:   len(r.Missing),
 			Extra:     len(r.Extra),
 			Different: len(r.Different),
+			Ignored:   len(r.Ignored),
 		},
 		Missing:   orEmpty(r.Missing),
 		Extra:     orEmpty(r.Extra),
 		Different: orEmpty(r.Different),
 		Same:      orEmpty(r.Same),
+		Ignored:   orEmpty(r.Ignored),
 		Matrix:    map[string][]*int{},
 	}
 	if len(r.Envs) > 0 {

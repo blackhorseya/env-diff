@@ -26,6 +26,8 @@ type Environment struct {
 type Options struct {
 	// KeysOnly ignores values: a key present everywhere is Same.
 	KeysOnly bool
+	// Ignore names keys to leave out of the comparison entirely.
+	Ignore []string
 }
 
 // Status classifies one key across all environments.
@@ -86,7 +88,8 @@ type Result struct {
 	Missing   []string
 	Extra     []string
 	Different []string
-	KeysOnly  bool
+	Ignored   []string // ignored keys that exist in at least one environment
+	Options   Options
 }
 
 // Count returns the number of keys that drifted.
@@ -99,7 +102,9 @@ func (x Result) HasDrift() bool {
 	return x.Count() > 0
 }
 
-// Compare classifies the keys of envs against the first environment.
+// Compare classifies the keys of envs against the first environment. Keys
+// named in opts.Ignore are skipped and listed in Result.Ignored when they
+// exist somewhere.
 // Presence is judged before values: a key absent somewhere is Missing or
 // Extra even if the present values also disagree; its cells still show the
 // value groups.
@@ -111,7 +116,12 @@ func Compare(envs []Environment, opts Options) Result {
 		Missing:   []string{},
 		Extra:     []string{},
 		Different: []string{},
-		KeysOnly:  opts.KeysOnly,
+		Ignored:   []string{},
+		Options:   opts,
+	}
+	ignore := map[string]bool{}
+	for _, k := range opts.Ignore {
+		ignore[k] = true
 	}
 	keys := map[string]struct{}{}
 	for _, e := range envs {
@@ -121,6 +131,10 @@ func Compare(envs []Environment, opts Options) Result {
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		if ignore[key] {
+			r.Ignored = append(r.Ignored, key)
+			continue
+		}
 		row := classify(key, envs, opts.KeysOnly)
 		r.Rows = append(r.Rows, row)
 		switch row.Status {

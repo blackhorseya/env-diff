@@ -184,8 +184,11 @@ func TestCompare(t *testing.T) {
 			if r.Count() != tt.wantCount {
 				t.Errorf("Count() = %d, want %d", r.Count(), tt.wantCount)
 			}
-			if r.KeysOnly != tt.keysOnly {
-				t.Errorf("KeysOnly = %v, want %v", r.KeysOnly, tt.keysOnly)
+			if r.Options.KeysOnly != tt.keysOnly {
+				t.Errorf("Options.KeysOnly = %v, want %v", r.Options.KeysOnly, tt.keysOnly)
+			}
+			if r.Ignored == nil || len(r.Ignored) != 0 {
+				t.Errorf("Ignored = %v, want an empty slice", r.Ignored)
 			}
 			if len(r.Rows) != len(tt.same)+len(tt.missing)+len(tt.extra)+len(tt.different) {
 				t.Errorf("Rows has %d entries, want one per key", len(r.Rows))
@@ -239,6 +242,32 @@ func TestCompareKeysOnlyCollapsesGroups(t *testing.T) {
 	}
 	if r.Rows[0].Status != Same {
 		t.Errorf("Status = %v, want same", r.Rows[0].Status)
+	}
+}
+
+func TestCompareIgnore(t *testing.T) {
+	r := Compare(envs(
+		vars{"A": "1", "B": "1", "D": "1"},
+		vars{"A": "1", "B": "2", "C": "1", "E": "1"},
+	), Options{Ignore: []string{"E", "B", "ZZZ"}})
+
+	if want := []string{"B", "E"}; !slices.Equal(r.Ignored, want) {
+		t.Errorf("Ignored = %v, want %v (sorted, only keys that exist)", r.Ignored, want)
+	}
+	if !slices.Equal(r.Same, []string{"A"}) || !slices.Equal(r.Missing, []string{"D"}) ||
+		!slices.Equal(r.Extra, []string{"C"}) || len(r.Different) != 0 {
+		t.Errorf("lists = %v/%v/%v/%v", r.Same, r.Missing, r.Extra, r.Different)
+	}
+	for _, row := range r.Rows {
+		if row.Key == "B" || row.Key == "E" {
+			t.Errorf("Rows still contains ignored key %s", row.Key)
+		}
+	}
+	if !slices.Equal(r.Options.Ignore, []string{"E", "B", "ZZZ"}) {
+		t.Errorf("Options.Ignore = %v, want the flag echoed", r.Options.Ignore)
+	}
+	if r.Count() != 2 {
+		t.Errorf("Count() = %d, want 2", r.Count())
 	}
 }
 

@@ -76,7 +76,7 @@ func TestTerminal(t *testing.T) {
 		},
 		{
 			name:   "keys only",
-			result: diff.Result{Missing: []string{"A"}, KeysOnly: true},
+			result: diff.Result{Missing: []string{"A"}, Options: diff.Options{KeysOnly: true}},
 			want:   "Environment Drift (keys only)\n\nMissing in target\n  A\n\n1 difference found\n",
 		},
 		{
@@ -118,6 +118,34 @@ func TestTerminal(t *testing.T) {
 				"K    +  -  -  missing in b, c\n" +
 				"\n" +
 				"1 difference found\n",
+		},
+		{
+			name:   "ignored keys are counted after the summary",
+			result: diff.Result{Different: []string{"A"}, Ignored: []string{"B", "C"}, Options: diff.Options{Ignore: []string{"B", "C"}}},
+			want:   "Environment Drift\n\nDifferent values\n  A\n\n1 difference found\n2 keys ignored\n",
+		},
+		{
+			name:   "ignored keys with no drift",
+			result: diff.Result{Ignored: []string{"B"}, Options: diff.Options{Ignore: []string{"B"}}},
+			want:   "Environment Drift\n\nNo differences found\n1 key ignored\n",
+		},
+		{
+			name:   "ignore that matched nothing is reported",
+			result: diff.Result{Same: []string{"A"}, Ignored: []string{}, Options: diff.Options{Ignore: []string{"TYPO"}}},
+			want:   "Environment Drift\n\nNo differences found\n0 keys ignored\n",
+		},
+		{
+			name: "matrix with ignored keys",
+			result: diff.Compare([]diff.Environment{
+				{Name: "a", Vars: vars{"K": "1", "X": "1"}}, {Name: "b", Vars: vars{"X": "2"}}, {Name: "c", Vars: vars{"K": "1"}},
+			}, diff.Options{Ignore: []string{"X"}}),
+			want: "Environment Drift\n" +
+				"\n" +
+				"KEY  a  b  c\n" +
+				"K    +  -  +  missing in b\n" +
+				"\n" +
+				"1 difference found\n" +
+				"1 key ignored\n",
 		},
 		{
 			name: "matrix with no drift",
@@ -187,8 +215,8 @@ type decoded struct {
 	Summary  struct {
 		Same, Missing, Extra, Different int
 	} `json:"summary"`
-	Missing, Extra, Different, Same []string
-	Matrix                          map[string][]*int `json:"matrix"`
+	Missing, Extra, Different, Same, Ignored []string
+	Matrix                                   map[string][]*int `json:"matrix"`
 }
 
 func TestJSON(t *testing.T) {
@@ -240,6 +268,32 @@ func TestJSON(t *testing.T) {
 	if len(got.Matrix) != 6 {
 		t.Errorf("matrix has %d keys, want 6", len(got.Matrix))
 	}
+	if got.Ignored == nil || len(got.Ignored) != 0 {
+		t.Errorf("ignored = %v, want []", got.Ignored)
+	}
+}
+
+func TestJSONIgnored(t *testing.T) {
+	var buf bytes.Buffer
+	r := diff.Compare([]diff.Environment{
+		{Name: "a", Vars: vars{"K": "1", "X": "1"}}, {Name: "b", Vars: vars{"K": "1", "Y": "1"}},
+	}, diff.Options{Ignore: []string{"X", "Y", "NOPE"}})
+	if err := JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got decoded
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Ignored, []string{"X", "Y"}) {
+		t.Errorf("ignored = %v, want [X Y]", got.Ignored)
+	}
+	if !strings.Contains(buf.String(), `"ignored": 2`) {
+		t.Errorf("summary.ignored missing:\n%s", buf.String())
+	}
+	if _, present := got.Matrix["X"]; present || len(got.Matrix) != 1 {
+		t.Errorf("matrix must exclude ignored keys: %v", got.Matrix)
+	}
 }
 
 func TestJSONThreeEnvironments(t *testing.T) {
@@ -264,11 +318,11 @@ func TestJSONThreeEnvironments(t *testing.T) {
 
 func TestJSONNeverNullLists(t *testing.T) {
 	var buf bytes.Buffer
-	if err := JSON(&buf, diff.Result{KeysOnly: true}); err != nil {
+	if err := JSON(&buf, diff.Result{Options: diff.Options{KeysOnly: true}}); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, field := range []string{`"envs": []`, `"missing": []`, `"extra": []`, `"different": []`, `"same": []`, `"matrix": {}`} {
+	for _, field := range []string{`"envs": []`, `"missing": []`, `"extra": []`, `"different": []`, `"same": []`, `"ignored": []`, `"matrix": {}`} {
 		if !strings.Contains(out, field) {
 			t.Errorf("output lacks %s:\n%s", field, out)
 		}
@@ -285,7 +339,7 @@ func TestJSONNeverNullLists(t *testing.T) {
 	if err := JSON(&buf, drift()); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"envs", "missing", "extra", "different", "same", "matrix", "target", "source"} {
+	for _, field := range []string{"envs", "missing", "extra", "different", "same", "ignored", "matrix", "target", "source"} {
 		if strings.Contains(buf.String(), `"`+field+`": null`) {
 			t.Errorf("%s is null:\n%s", field, buf.String())
 		}
