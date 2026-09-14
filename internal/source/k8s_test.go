@@ -59,9 +59,9 @@ func TestResolveK8s(t *testing.T) {
 	}
 }
 
-// fakeKubectl returns a Runner that checks the exact command line and
-// replies with stdout, writing note to the forwarded stderr.
-func fakeKubectl(t *testing.T, wantArgs, stdout, note string) Runner {
+// fakeCLI returns a Runner that checks the exact command line and replies
+// with stdout, writing note to the forwarded stderr.
+func fakeCLI(t *testing.T, wantArgs, stdout, note string) Runner {
 	t.Helper()
 	return func(_ context.Context, stderr io.Writer, name string, args ...string) ([]byte, error) {
 		if got := commandLine(name, args); got != wantArgs {
@@ -75,7 +75,7 @@ func fakeKubectl(t *testing.T, wantArgs, stdout, note string) Runner {
 func TestK8sLoadConfigMap(t *testing.T) {
 	var stderr bytes.Buffer
 	r := Resolver{
-		Run: fakeKubectl(t, "kubectl get configmap app -n prod -o json",
+		Run: fakeCLI(t, "kubectl get configmap app -n prod -o json",
 			`{"apiVersion":"v1","kind":"ConfigMap","data":{"LOG_LEVEL":"debug","TOKEN":"`+secret+`"},"binaryData":{"BLOB":"`+b64("bin-"+secret)+`"}}`,
 			"kubectl says hello\n"),
 		Stderr: &stderr,
@@ -106,7 +106,7 @@ func TestK8sLoadConfigMap(t *testing.T) {
 }
 
 func TestK8sLoadSecret(t *testing.T) {
-	r := Resolver{Run: fakeKubectl(t, "kubectl get secret app -n prod -o json",
+	r := Resolver{Run: fakeCLI(t, "kubectl get secret app -n prod -o json",
 		`{"kind":"Secret","type":"Opaque","data":{"API_KEY":"`+b64(secret)+`","EMPTY":""}}`, "")}
 	src, err := r.Resolve("k8s://prod/secret/app")
 	if err != nil {
@@ -129,7 +129,7 @@ func TestK8sLoadSecret(t *testing.T) {
 
 func TestK8sLoadEmptyObject(t *testing.T) {
 	for _, stdout := range []string{`{}`, `{"data":null}`, `{"kind":"ConfigMap","metadata":{"name":"app"}}`} {
-		r := Resolver{Run: fakeKubectl(t, "kubectl get configmap app -n prod -o json", stdout, "")}
+		r := Resolver{Run: fakeCLI(t, "kubectl get configmap app -n prod -o json", stdout, "")}
 		src, _ := r.Resolve("k8s://prod/configmap/app")
 		vars, err := src.Load(t.Context())
 		if err != nil {

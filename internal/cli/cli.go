@@ -77,10 +77,12 @@ func (a *app) command() *cobra.Command {
 			"printed.\n\n" +
 			"Each argument is a .env file or a remote source addressed by URI:\n" +
 			"  k8s://<namespace>/configmap/<name>   read with kubectl\n" +
-			"  k8s://<namespace>/secret/<name>      read with kubectl, base64-decoded\n\n" +
+			"  k8s://<namespace>/secret/<name>      read with kubectl, base64-decoded\n" +
+			"  lambda://<function>[:<qualifier>]    read with aws (name or ARN)\n\n" +
 			"Remote sources are read with the CLI already on PATH and its own\n" +
-			"configuration (KUBECONFIG, current context). That CLI's stderr is\n" +
-			"shown as is; env-diff itself never prints a value.\n\n" +
+			"configuration (KUBECONFIG and current context; AWS_PROFILE and\n" +
+			"AWS_REGION). That CLI's stderr is shown as is; env-diff itself never\n" +
+			"prints a value.\n\n" +
 			"Exit codes:\n" +
 			"  0  no differences\n" +
 			"  1  differences found\n" +
@@ -91,7 +93,8 @@ func (a *app) command() *cobra.Command {
 			"  env-diff .env.dev .env.staging .env.production\n" +
 			"  env-diff .env.staging .env.production --ignore DEBUG,LOCAL_PORT\n" +
 			"  env-diff .env.production k8s://prod/configmap/app\n" +
-			"  env-diff .env.example k8s://prod/secret/app --keys-only --allow-extra",
+			"  env-diff .env.example k8s://prod/secret/app --keys-only --allow-extra\n" +
+			"  env-diff .env.production lambda://my-function:prod",
 		Version:           resolveVersion(a.opts.Version),
 		Args:              atLeastTwoFiles,
 		SilenceUsage:      true,
