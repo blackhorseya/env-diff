@@ -45,6 +45,10 @@ cli.Run               → exit code cobra command; drift is app state, every err
 - **Output layout is golden-tested** in `presenter_test.go` and `cli_test.go`, and README samples are pasted from real output. Color must never change layout: `TestTerminalColor` strips the ANSI codes and expects byte equality with plain output for both the sectioned and the matrix form (matrix cells are padded before painting). JSON key lists are always arrays (`orEmpty`), never `null`; inside `matrix`, `null` means the key is absent from that env, and `target` is emitted only for exactly two envs. `examples/` (`.env.staging`, `.env.production`, `.env.qa`, `.env.example`) holds the files behind every README sample; `TestExamples` in `cli_test.go` pins their exact two-file and three-file output, so README, `examples/` and that test change together.
 - **Dependencies**: cobra only, chosen to match `git-why`. Don't add a color, isatty or dotenv library.
 
+### GitHub Action (`action.yml`)
+
+A composite action at the repo root, used as `blackhorseya/env-diff@<tag>`. The install step downloads the release archive matching `RUNNER_OS`/`RUNNER_ARCH`, verifies it against `checksums.txt` and prepends it to `PATH`; the run step maps inputs to flags and writes `exit-code` and `drift` outputs. Two things are easy to break: the version must resolve to a `v*` tag (`inputs.version`, else `github.action_ref`, which is empty for `uses: ./`), and `fail-on-drift: "false"` must forgive exit 1 only, never exit 2. CI covers both paths: `action-install` downloads `v0.1.0` on ubuntu and macos, `action-source` builds from the checkout and runs with `install: "false"`. A tag must contain `action.yml` before it is usable as an action ref.
+
 ## Testing notes
 
 - Fixtures put a `secret` sentinel constant into every value so leak checks read the same in every package.

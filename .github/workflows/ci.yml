@@ -37,6 +37,69 @@ jobs:
         with:
           version: v2.13
 
+  action-install:
+    name: action install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the action with a released binary
+        id: diff
+        uses: ./
+        with:
+          version: v0.1.0
+          files: examples/.env.staging examples/.env.production
+          fail-on-drift: "false"
+      - name: Check outputs and installed version
+        run: |
+          test "${{ steps.diff.outputs.exit-code }}" = "1"
+          test "${{ steps.diff.outputs.drift }}" = "true"
+          env-diff --version | grep -q "v0.1.0"
+
+  action-source:
+    name: action from source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install env-diff from this checkout
+        run: |
+          go install ./cmd/env-diff
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Validate production against the example file
+        id: validate
+        uses: ./
+        with:
+          install: "false"
+          files: examples/.env.example examples/.env.production
+          keys-only: "true"
+          allow-extra: "true"
+          fail-on-drift: "false"
+      - run: test "${{ steps.validate.outputs.drift }}" = "true"
+      - name: Ignore every drifted key
+        id: clean
+        uses: ./
+        with:
+          install: "false"
+          files: examples/.env.staging examples/.env.production examples/.env.qa
+          ignore: STRIPE_API_KEY,LOG_LEVEL,OLD_FEATURE_FLAG
+          format: json
+      - run: test "${{ steps.clean.outputs.exit-code }}" = "0"
+      - name: A missing file must fail even with fail-on-drift off
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with:
+          install: "false"
+          files: examples/.env.staging examples/does-not-exist
+          fail-on-drift: "false"
+      - run: test "${{ steps.broken.outcome }}" = "failure"
+
   goreleaser:
     name: goreleaser check
     runs-on: ubuntu-latest
