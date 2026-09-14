@@ -156,6 +156,9 @@ EMPTY=                                  # empty value
 export FEATURE_X=true                   # optional export prefix
 # full-line comment
 API_HOST=api.example.com # inline comment
+PRIVATE_KEY="-----BEGIN KEY-----
+...
+-----END KEY-----"                      # quoted values may span lines
 ```
 
 Rules worth knowing:
@@ -170,9 +173,11 @@ Rules worth knowing:
   numbers. Ambiguous configuration is never silently resolved.
 - An empty file, or one with only comments, is a valid empty environment.
 - A UTF-8 byte order mark and CRLF line endings are tolerated.
-- Not supported: multi-line quoted values (error), escape sequences other
-  than `\"` and `\\` (kept literally), and variable expansion (`${VAR}` is
-  kept as literal text).
+- A quoted value may span several lines. Line endings inside it become LF,
+  `#` and blank lines inside it are content, and an error in such a value
+  reports the line where the assignment starts.
+- Not supported: escape sequences other than `\"` and `\\` (kept literally)
+  and variable expansion (`${VAR}` is kept as literal text).
 
 ## Development
 

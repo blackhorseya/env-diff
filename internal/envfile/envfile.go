@@ -6,6 +6,9 @@
 //	KEY=value            unquoted value, surrounding whitespace trimmed
 //	KEY="value"          double-quoted; \" and \\ are unescaped, nothing else
 //	KEY='value'          single-quoted; taken literally
+//	KEY="line one
+//	line two"            quoted values may span lines; line endings inside
+//	                     them are normalized to LF
 //	KEY=                 empty value
 //	export KEY=value     optional export prefix
 //	# comment            full-line comment
@@ -13,9 +16,9 @@
 //
 // Keys must match [A-Za-z_][A-Za-z0-9_]* and are case-sensitive. A UTF-8
 // byte order mark and CRLF line endings are tolerated. Not supported:
-// multi-line quoted values (error), variable expansion (${VAR} is kept as
-// literal text), and duplicate keys (error, so ambiguous configuration is
-// never silently resolved).
+// variable expansion (${VAR} is kept as literal text) and duplicate keys
+// (error, so ambiguous configuration is never silently resolved). Errors in
+// a multi-line value report the line where the assignment starts.
 package envfile
 
 import (
@@ -99,68 +102,76 @@ func parse(text string) (Env, error) {
 	vars := map[string]string{}
 	definedAt := map[string]int{}
 	text = strings.TrimPrefix(text, "\uFEFF")
+	lines := slices.Collect(strings.Lines(text))
 
-	n := 0
-	for raw := range strings.Lines(text) {
-		n++
-		line := strings.TrimSpace(raw)
+	for i := 0; i < len(lines); {
+		start := i + 1 // 1-based number of the line this assignment begins on
+		line := strings.TrimLeft(trimEOL(lines[i]), " \t")
+		i++
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, err := parseAssignment(line)
+		key, value, extra, err := parseAssignment(line, lines[i:])
+		i += extra
 		if err != nil {
-			return Env{}, &Error{Line: n, Msg: err.Error()}
+			return Env{}, &Error{Line: start, Msg: err.Error()}
 		}
 		if first, dup := definedAt[key]; dup {
 			return Env{}, &Error{
-				Line: n,
+				Line: start,
 				Msg:  fmt.Sprintf("duplicate key %q (already defined at line %d)", key, first),
 			}
 		}
-		definedAt[key] = n
+		definedAt[key] = start
 		vars[key] = value
 	}
 	return Env{vars: vars}, nil
 }
 
+// trimEOL removes one trailing LF or CRLF.
+func trimEOL(s string) string {
+	return strings.TrimSuffix(strings.TrimSuffix(s, "\n"), "\r")
+}
+
 // parseAssignment splits one non-blank, non-comment line into key and value.
-// Error messages must not include any part of the line.
-func parseAssignment(line string) (key, value string, err error) {
-	if rest, ok := strings.CutPrefix(line, "export"); ok && rest != "" && isBlank(rest[0]) {
-		line = strings.TrimLeft(rest, " \t")
+// A quoted value may continue on the following lines; extra is how many of
+// them were consumed. Error messages must not include any part of the line.
+func parseAssignment(line string, rest []string) (key, value string, extra int, err error) {
+	if after, ok := strings.CutPrefix(line, "export"); ok && after != "" && isBlank(after[0]) {
+		line = strings.TrimLeft(after, " \t")
 	}
 	key, rawValue, found := strings.Cut(line, "=")
 	if !found {
-		return "", "", errors.New("expected KEY=VALUE")
+		return "", "", 0, errors.New("expected KEY=VALUE")
 	}
-	key = strings.TrimSpace(key)
+	key = strings.TrimRight(key, " \t")
 	if key == "" {
-		return "", "", errors.New("missing variable name before \"=\"")
+		return "", "", 0, errors.New("missing variable name before \"=\"")
 	}
 	if !validKey(key) {
-		return "", "", errors.New("invalid variable name")
+		return "", "", 0, errors.New("invalid variable name")
 	}
-	value, err = parseValue(rawValue)
+	value, extra, err = parseValue(rawValue, rest)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
-	return key, value, nil
+	return key, value, extra, nil
 }
 
-func parseValue(raw string) (string, error) {
+func parseValue(raw string, rest []string) (string, int, error) {
 	s := strings.TrimLeft(raw, " \t")
 	if s == "" {
-		return "", nil
+		return "", 0, nil
 	}
 	switch s[0] {
 	case '"':
-		return parseDoubleQuoted(s)
+		return parseDoubleQuoted(s, rest)
 	case '\'':
-		return parseSingleQuoted(s)
+		return parseSingleQuoted(s, rest)
 	case '#':
 		if len(s) < len(raw) {
 			// Whitespace before "#": the whole value is a comment.
-			return "", nil
+			return "", 0, nil
 		}
 	}
 	// Unquoted. Whitespace followed by "#" starts a comment; a "#" glued to
@@ -168,35 +179,57 @@ func parseValue(raw string) (string, error) {
 	if i := inlineCommentIndex(s); i >= 0 {
 		s = s[:i]
 	}
-	return strings.TrimRight(s, " \t"), nil
+	return strings.TrimRight(s, " \t"), 0, nil
 }
 
-func parseDoubleQuoted(s string) (string, error) {
+// parseDoubleQuoted reads from the opening quote in first, continuing into
+// rest line by line until the closing quote. Physical line endings inside
+// the value become LF.
+func parseDoubleQuoted(first string, rest []string) (string, int, error) {
 	var b strings.Builder
-	for i := 1; i < len(s); i++ {
-		switch c := s[i]; c {
-		case '\\':
-			if i+1 < len(s) && (s[i+1] == '"' || s[i+1] == '\\') {
-				b.WriteByte(s[i+1])
-				i++
-				continue
+	s, pos, consumed := first, 1, 0
+	for {
+		for i := pos; i < len(s); i++ {
+			switch c := s[i]; c {
+			case '\\':
+				if i+1 < len(s) && (s[i+1] == '"' || s[i+1] == '\\') {
+					b.WriteByte(s[i+1])
+					i++
+					continue
+				}
+				b.WriteByte(c)
+			case '"':
+				return b.String(), consumed, checkAfterQuote(s[i+1:])
+			default:
+				b.WriteByte(c)
 			}
-			b.WriteByte(c)
-		case '"':
-			return b.String(), checkAfterQuote(s[i+1:])
-		default:
-			b.WriteByte(c)
 		}
+		if consumed == len(rest) {
+			return "", consumed, errors.New("unterminated double-quoted value")
+		}
+		b.WriteByte('\n')
+		s, pos = trimEOL(rest[consumed]), 0
+		consumed++
 	}
-	return "", errors.New("unterminated double-quoted value")
 }
 
-func parseSingleQuoted(s string) (string, error) {
-	end := strings.IndexByte(s[1:], '\'')
-	if end < 0 {
-		return "", errors.New("unterminated single-quoted value")
+// parseSingleQuoted is parseDoubleQuoted without escape handling.
+func parseSingleQuoted(first string, rest []string) (string, int, error) {
+	var b strings.Builder
+	s, pos, consumed := first, 1, 0
+	for {
+		if end := strings.IndexByte(s[pos:], '\''); end >= 0 {
+			b.WriteString(s[pos : pos+end])
+			return b.String(), consumed, checkAfterQuote(s[pos+end+1:])
+		}
+		b.WriteString(s[pos:])
+		if consumed == len(rest) {
+			return "", consumed, errors.New("unterminated single-quoted value")
+		}
+		b.WriteByte('\n')
+		s, pos = trimEOL(rest[consumed]), 0
+		consumed++
 	}
-	return s[1 : 1+end], checkAfterQuote(s[2+end:])
 }
 
 // checkAfterQuote allows only whitespace and an optional comment after a
