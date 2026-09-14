@@ -148,6 +148,34 @@ func TestTerminal(t *testing.T) {
 				"1 key ignored\n",
 		},
 		{
+			name: "allowed extras are hidden and counted after the summary",
+			result: diff.Compare([]diff.Environment{
+				{Name: "a", Vars: vars{"K": "1", "M": "1"}}, {Name: "b", Vars: vars{"K": "2", "X": "1", "Y": "1"}},
+			}, diff.Options{AllowExtra: true}),
+			want: "Environment Drift\n\nMissing in target\n  M\n\nDifferent values\n  K\n\n2 differences found\n2 extra keys allowed\n",
+		},
+		{
+			name: "only allowed extras is no drift",
+			result: diff.Compare([]diff.Environment{
+				{Name: "a", Vars: vars{"K": "1"}}, {Name: "b", Vars: vars{"K": "1", "X": "1"}},
+			}, diff.Options{AllowExtra: true}),
+			want: "Environment Drift\n\nNo differences found\n1 extra key allowed\n",
+		},
+		{
+			name: "matrix hides allowed extras",
+			result: diff.Compare([]diff.Environment{
+				{Name: "a", Vars: vars{"K": "1"}}, {Name: "b", Vars: vars{"X": "1"}}, {Name: "c", Vars: vars{"K": "1"}},
+			}, diff.Options{AllowExtra: true, Ignore: []string{"Z"}}),
+			want: "Environment Drift\n" +
+				"\n" +
+				"KEY  a  b  c\n" +
+				"K    +  -  +  missing in b\n" +
+				"\n" +
+				"1 difference found\n" +
+				"0 keys ignored\n" +
+				"1 extra key allowed\n",
+		},
+		{
 			name: "matrix with no drift",
 			result: diff.Compare([]diff.Environment{
 				{Name: "a", Vars: vars{"K": "1"}}, {Name: "b", Vars: vars{"K": "1"}}, {Name: "c", Vars: vars{"K": "1"}},
@@ -207,12 +235,13 @@ func TestTerminalColor(t *testing.T) {
 }
 
 type decoded struct {
-	Source   string   `json:"source"`
-	Target   string   `json:"target"`
-	Envs     []string `json:"envs"`
-	KeysOnly bool     `json:"keys_only"`
-	Drift    bool     `json:"drift"`
-	Summary  struct {
+	Source     string   `json:"source"`
+	Target     string   `json:"target"`
+	Envs       []string `json:"envs"`
+	KeysOnly   bool     `json:"keys_only"`
+	AllowExtra bool     `json:"allow_extra"`
+	Drift      bool     `json:"drift"`
+	Summary    struct {
 		Same, Missing, Extra, Different int
 	} `json:"summary"`
 	Missing, Extra, Different, Same, Ignored []string
@@ -270,6 +299,26 @@ func TestJSON(t *testing.T) {
 	}
 	if got.Ignored == nil || len(got.Ignored) != 0 {
 		t.Errorf("ignored = %v, want []", got.Ignored)
+	}
+}
+
+func TestJSONAllowExtra(t *testing.T) {
+	var buf bytes.Buffer
+	r := diff.Compare([]diff.Environment{
+		{Name: "a", Vars: vars{"K": "1"}}, {Name: "b", Vars: vars{"K": "1", "X": "1"}},
+	}, diff.Options{AllowExtra: true})
+	if err := JSON(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	var got decoded
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.AllowExtra || got.Drift {
+		t.Errorf("allow_extra = %v, drift = %v", got.AllowExtra, got.Drift)
+	}
+	if !slices.Equal(got.Extra, []string{"X"}) || got.Summary.Extra != 1 {
+		t.Errorf("extra = %v (summary %d), want still listed", got.Extra, got.Summary.Extra)
 	}
 }
 

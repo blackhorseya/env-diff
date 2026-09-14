@@ -28,6 +28,9 @@ type Options struct {
 	KeysOnly bool
 	// Ignore names keys to leave out of the comparison entirely.
 	Ignore []string
+	// AllowExtra keeps Extra keys out of Count and HasDrift. They are still
+	// listed so reports can mention them.
+	AllowExtra bool
 }
 
 // Status classifies one key across all environments.
@@ -92,9 +95,14 @@ type Result struct {
 	Options   Options
 }
 
-// Count returns the number of keys that drifted.
+// Count returns the number of keys that drifted. Extra keys do not count
+// when Options.AllowExtra is set.
 func (x Result) Count() int {
-	return len(x.Missing) + len(x.Extra) + len(x.Different)
+	n := len(x.Missing) + len(x.Different)
+	if !x.Options.AllowExtra {
+		n += len(x.Extra)
+	}
+	return n
 }
 
 // HasDrift reports whether any key is missing, extra, or different.

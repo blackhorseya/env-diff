@@ -53,7 +53,9 @@ func Terminal(w io.Writer, r diff.Result, color bool) error {
 		b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
 	default:
 		section(&b, p, ansiRed, "Missing in target", r.Missing)
-		section(&b, p, ansiYellow, "Extra in target", r.Extra)
+		if !r.Options.AllowExtra {
+			section(&b, p, ansiYellow, "Extra in target", r.Extra)
+		}
 		section(&b, p, ansiCyan, "Different values", r.Different)
 		b.WriteString("\n" + p.paint(ansiBold+ansiRed, plural(r.Count(), "difference")+" found") + "\n")
 	}
@@ -61,6 +63,9 @@ func Terminal(w io.Writer, r diff.Result, color bool) error {
 	// matched nothing is visible rather than silently inert.
 	if len(r.Options.Ignore) > 0 {
 		b.WriteString(plural(len(r.Ignored), "key") + " ignored\n")
+	}
+	if r.Options.AllowExtra && len(r.Extra) > 0 {
+		b.WriteString(plural(len(r.Extra), "extra key") + " allowed\n")
 	}
 
 	_, err := io.WriteString(w, b.String())
@@ -83,6 +88,9 @@ func section(b *strings.Builder, p painter, code, title string, keys []string) {
 func matrix(b *strings.Builder, p painter, r diff.Result) {
 	var rows []diff.Row
 	for _, status := range []diff.Status{diff.Missing, diff.Extra, diff.Different} {
+		if status == diff.Extra && r.Options.AllowExtra {
+			continue
+		}
 		for _, row := range r.Rows {
 			if row.Status == status {
 				rows = append(rows, row)
@@ -179,18 +187,19 @@ func plural(n int, noun string) string {
 }
 
 type report struct {
-	Source    string            `json:"source"`
-	Target    string            `json:"target,omitempty"`
-	Envs      []string          `json:"envs"`
-	KeysOnly  bool              `json:"keys_only"`
-	Drift     bool              `json:"drift"`
-	Summary   summary           `json:"summary"`
-	Missing   []string          `json:"missing"`
-	Extra     []string          `json:"extra"`
-	Different []string          `json:"different"`
-	Same      []string          `json:"same"`
-	Ignored   []string          `json:"ignored"`
-	Matrix    map[string][]*int `json:"matrix"`
+	Source     string            `json:"source"`
+	Target     string            `json:"target,omitempty"`
+	Envs       []string          `json:"envs"`
+	KeysOnly   bool              `json:"keys_only"`
+	AllowExtra bool              `json:"allow_extra"`
+	Drift      bool              `json:"drift"`
+	Summary    summary           `json:"summary"`
+	Missing    []string          `json:"missing"`
+	Extra      []string          `json:"extra"`
+	Different  []string          `json:"different"`
+	Same       []string          `json:"same"`
+	Ignored    []string          `json:"ignored"`
+	Matrix     map[string][]*int `json:"matrix"`
 }
 
 type summary struct {
@@ -204,12 +213,14 @@ type summary struct {
 // JSON writes a machine-readable report. Key lists are always arrays, never
 // null. "matrix" maps every key to one entry per environment: the value
 // group number, or null where the key is absent. "target" is present only
-// when exactly two environments were compared.
+// when exactly two environments were compared. With allow_extra, "extra"
+// still lists the keys but "drift" ignores them.
 func JSON(w io.Writer, r diff.Result) error {
 	rep := report{
-		Envs:     orEmpty(r.Envs),
-		KeysOnly: r.Options.KeysOnly,
-		Drift:    r.HasDrift(),
+		Envs:       orEmpty(r.Envs),
+		KeysOnly:   r.Options.KeysOnly,
+		AllowExtra: r.Options.AllowExtra,
+		Drift:      r.HasDrift(),
 		Summary: summary{
 			Same:      len(r.Same),
 			Missing:   len(r.Missing),

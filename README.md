@@ -66,8 +66,7 @@ Presence is judged before values: a key absent from one target is
 
 ### `--keys-only`
 
-Compare which keys exist and ignore value differences. Useful for checking a
-deployment file against `.env.example`:
+Compare which keys exist and ignore value differences:
 
 ```
 $ env-diff .env.example .env.production --keys-only
@@ -81,6 +80,24 @@ Extra in target
   OLD_FEATURE_FLAG
 
 2 differences found
+```
+
+### `--allow-extra` and validating `.env.example`
+
+Keys that only the targets have are listed but not counted as drift. With
+`--keys-only` this checks that a deployment file defines every required key
+without failing on keys the example does not know about:
+
+```
+$ env-diff .env.example .env.production --keys-only --allow-extra
+
+Environment Drift (keys only)
+
+Missing in target
+  STRIPE_API_KEY
+
+1 difference found
+1 extra key allowed
 ```
 
 ### `--ignore`
@@ -128,8 +145,9 @@ printed, only which files agree.
 Structured output for automation. `envs` lists the files in order; `matrix`
 maps every key to one entry per file: files with the same number share a
 value, `null` marks the key as absent. `target` is present only when exactly
-two files were compared. `ignored` lists the ignored keys that existed. The key lists are always
-arrays, never `null`.
+two files were compared. `ignored` lists the ignored keys that existed. With `--allow-extra`, `extra`
+is still listed but `drift` ignores it. The key lists are always arrays,
+never `null`.
 
 ```
 $ env-diff .env.staging .env.production --format json
@@ -141,6 +159,7 @@ $ env-diff .env.staging .env.production --format json
     ".env.production"
   ],
   "keys_only": false,
+  "allow_extra": false,
   "drift": true,
   "summary": {
     "same": 2,
@@ -202,7 +221,7 @@ example file requires:
 - name: Check environment keys
   run: |
     go install github.com/blackhorseya/env-diff/cmd/env-diff@latest
-    env-diff .env.example .env.production --keys-only
+    env-diff .env.example .env.production --keys-only --allow-extra
 ```
 
 The same command works in GitLab CI, Makefile targets, or a pre-deploy hook.

@@ -271,6 +271,27 @@ func TestCompareIgnore(t *testing.T) {
 	}
 }
 
+func TestCompareAllowExtra(t *testing.T) {
+	e := envs(vars{"A": "1", "B": "1"}, vars{"A": "1", "C": "1", "D": "1"})
+	strict := Compare(e, Options{})
+	lenient := Compare(e, Options{AllowExtra: true})
+
+	if strict.Count() != 3 || !strict.HasDrift() {
+		t.Errorf("strict: Count = %d, HasDrift = %v", strict.Count(), strict.HasDrift())
+	}
+	if lenient.Count() != 1 || !lenient.HasDrift() {
+		t.Errorf("lenient: Count = %d (missing B only), HasDrift = %v", lenient.Count(), lenient.HasDrift())
+	}
+	if !slices.Equal(lenient.Extra, []string{"C", "D"}) {
+		t.Errorf("lenient.Extra = %v, want the extras still listed", lenient.Extra)
+	}
+
+	onlyExtra := Compare(envs(vars{"A": "1"}, vars{"A": "1", "C": "1"}), Options{AllowExtra: true})
+	if onlyExtra.HasDrift() || onlyExtra.Count() != 0 {
+		t.Errorf("only extras: HasDrift = %v, Count = %d", onlyExtra.HasDrift(), onlyExtra.Count())
+	}
+}
+
 func TestStatusString(t *testing.T) {
 	for s, want := range map[Status]string{Same: "same", Missing: "missing", Extra: "extra", Different: "different", Status(99): "unknown"} {
 		if got := s.String(); got != want {
