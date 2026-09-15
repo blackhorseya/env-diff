@@ -39,6 +39,13 @@ type Env struct {
 	vars map[string]string
 }
 
+// FromMap builds an Env from vars, which is copied. Keys are taken as they
+// are: remote stores have their own naming rules, and the comparison only
+// needs names to be comparable.
+func FromMap(vars map[string]string) Env {
+	return Env{vars: maps.Clone(vars)}
+}
+
 // Keys returns the variable names in sorted order.
 func (x Env) Keys() []string {
 	return slices.Sorted(maps.Keys(x.vars))

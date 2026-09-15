@@ -210,3 +210,31 @@ func TestZeroEnv(t *testing.T) {
 		t.Error("zero Env Lookup = true")
 	}
 }
+
+func TestFromMap(t *testing.T) {
+	src := map[string]string{"B": secret, "A": "1"}
+	env := FromMap(src)
+	src["C"] = "added later"
+	delete(src, "A")
+
+	if got := env.Keys(); !slices.Equal(got, []string{"A", "B"}) {
+		t.Errorf("keys = %v, want the map as it was when copied", got)
+	}
+	if v, ok := env.Lookup("B"); !ok || v != secret {
+		t.Errorf("lookup B = %q, %v", v, ok)
+	}
+	if env.Len() != 2 {
+		t.Errorf("len = %d, want 2", env.Len())
+	}
+	if s := fmt.Sprintf("%v %+v %#v [%s]", env, env, env, env); strings.Contains(s, secret) {
+		t.Errorf("formatting leaks a value: %s", s)
+	}
+
+	empty := FromMap(nil)
+	if empty.Len() != 0 || len(empty.Keys()) != 0 {
+		t.Errorf("nil map: len = %d, keys = %v", empty.Len(), empty.Keys())
+	}
+	if _, ok := empty.Lookup("A"); ok {
+		t.Error("nil map: lookup found a key")
+	}
+}

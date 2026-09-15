@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/blackhorseya/env-diff/internal/diff"
-	"github.com/blackhorseya/env-diff/internal/envfile"
 	"github.com/blackhorseya/env-diff/internal/presenter"
+	"github.com/blackhorseya/env-diff/internal/source"
 )
 
 // Exit codes, as documented in the README.
@@ -32,7 +33,8 @@ type Options struct {
 
 // Run executes env-diff with args (excluding the program name) and returns
 // the process exit code. Normal output goes to stdout, errors to stderr.
-func Run(args []string, stdout, stderr io.Writer, opts Options) int {
+// Cancelling c stops any external program that is fetching a remote source.
+func Run(c context.Context, args []string, stdout, stderr io.Writer, opts Options) int {
 	if args == nil {
 		args = []string{} // a nil slice makes cobra fall back to os.Args
 	}
@@ -42,7 +44,7 @@ func Run(args []string, stdout, stderr io.Writer, opts Options) int {
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteContext(c); err != nil {
 		// Nothing useful can be done if stderr itself is broken.
 		_, _ = fmt.Fprintf(stderr, "env-diff: %v\n", err)
 		if _, ok := errors.AsType[*usageError](err); ok {
@@ -105,20 +107,32 @@ func atLeastTwoFiles(_ *cobra.Command, args []string) error {
 	if len(args) >= 2 {
 		return nil
 	}
-	return &usageError{err: fmt.Errorf("expected at least two files (<source> <target>...), got %d", len(args))}
+	return &usageError{err: fmt.Errorf("expected at least two environments (<source> <target>...), got %d", len(args))}
 }
 
 func (a *app) run(cmd *cobra.Command, args []string) error {
 	if a.format != "terminal" && a.format != "json" {
 		return &usageError{err: fmt.Errorf("unknown format %q (want terminal or json)", a.format)}
 	}
-	envs := make([]diff.Environment, 0, len(args))
-	for _, path := range args {
-		env, err := envfile.ParseFile(path)
+
+	// Resolve every argument before loading any, so a malformed one fails
+	// before a file is read or a remote store is contacted.
+	resolver := source.Resolver{Stderr: cmd.ErrOrStderr()}
+	sources := make([]source.Source, 0, len(args))
+	for _, arg := range args {
+		src, err := resolver.Resolve(arg)
+		if err != nil {
+			return &usageError{err: err}
+		}
+		sources = append(sources, src)
+	}
+	envs := make([]diff.Environment, 0, len(sources))
+	for _, src := range sources {
+		vars, err := src.Load(cmd.Context())
 		if err != nil {
 			return err
 		}
-		envs = append(envs, diff.Environment{Name: path, Vars: env})
+		envs = append(envs, diff.Environment{Name: src.Name(), Vars: vars})
 	}
 
 	result := diff.Compare(envs, diff.Options{KeysOnly: a.keysOnly, AllowExtra: a.allowExtra, Ignore: a.ignore})

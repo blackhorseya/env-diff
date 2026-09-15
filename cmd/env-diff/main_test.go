@@ -38,6 +38,7 @@ func TestBinaryExitCodes(t *testing.T) {
 		{"identical", []string{same, same}, 0},
 		{"drift", []string{same, drift}, 1},
 		{"missing file", []string{same, filepath.Join(dir, "missing.env")}, 2},
+		{"unknown scheme", []string{same, "foo://x"}, 2},
 		{"usage", []string{same}, 2},
 		{"version", []string{"--version"}, 0},
 	}
