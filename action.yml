@@ -1,5 +1,5 @@
 name: env-diff
-description: Detect configuration drift between .env files without exposing secrets
+description: Detect configuration drift between .env files and remote stores without exposing secrets
 author: blackhorseya
 branding:
   icon: shield
@@ -7,7 +7,7 @@ branding:
 
 inputs:
   files:
-    description: Files to compare, separated by whitespace. The first file is the reference; at least two are required.
+    description: Files or source URIs (k8s://, lambda://, ssm://) to compare, separated by whitespace. The first is the reference; at least two are required. kubectl or aws must be configured by an earlier step.
     required: true
   keys-only:
     description: Compare key presence only and ignore value differences.
