@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,6 +35,47 @@ func write(t *testing.T, name, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// fakeCLI installs a shell script as the only program on PATH, so a remote
+// source runs it instead of the real kubectl or aws, and points every
+// configuration variable those CLIs read at an empty file, so a test can
+// never reach a real cluster or account with the developer's credentials.
+// The script must use only shell builtins: PATH holds nothing else.
+func fakeCLI(t *testing.T, name, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("KUBECONFIG", empty)
+	for _, v := range []string{"AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		t.Setenv(v, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+}
+
+// kubectlScript answers `kubectl get <kind> <name> -n <ns> -o json` from a
+// table of command lines to JSON bodies and fails any other command line.
+func kubectlScript(replies map[string]string) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, `case "$*" in`)
+	for args, body := range replies {
+		fmt.Fprintf(&b, "  %q) printf '%%s' '%s' ;;\n", args, body)
+	}
+	fmt.Fprintln(&b, `  *) echo "fake kubectl: unexpected command line: $*" >&2; exit 9 ;;`)
+	fmt.Fprintln(&b, "esac")
+	return b.String()
+}
+
+func b64(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
 // fixtures returns a staging file and a production file that drift by one
@@ -187,7 +230,7 @@ func TestHelpAndVersion(t *testing.T) {
 		if res.code != exitOK || res.stderr != "" {
 			t.Errorf("%s: exit = %d, stderr = %q", flag, res.code, res.stderr)
 		}
-		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:"} {
+		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:", "k8s://<namespace>/configmap/<name>", "k8s://<namespace>/secret/<name>"} {
 			if !strings.Contains(res.stdout, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", flag, want, res.stdout)
 			}
@@ -317,11 +360,22 @@ func TestNeverPrintsValues(t *testing.T) {
 	dup := write(t, "dup.env", "TOKEN="+secret+"\nTOKEN="+secret+"\n")
 	unterminated := write(t, "unterminated.env", "TOKEN=\""+secret+"\n")
 	broken := write(t, "broken.env", secret+"\n")
+	fakeCLI(t, "kubectl", kubectlScript(map[string]string{
+		"get configmap app -n prod -o json":   `{"data":{"DATABASE_URL":"` + secret + `","LOG_LEVEL":"info","TOKEN":"` + secret + `"}}`,
+		"get secret app -n prod -o json":      `{"data":{"DATABASE_URL":"` + b64(secret) + `","TOKEN":"` + b64(secret) + `"}}`,
+		"get configmap noisy -n prod -o json": `error: ` + secret,
+		"get secret bad -n prod -o json":      `{"data":{"TOKEN":"` + secret + `!"}}`,
+	}))
 	tests := []struct {
 		name    string
 		args    []string
 		wantKey string
 	}{
+		{"configmap", []string{staging, "k8s://prod/configmap/app"}, "TOKEN"},
+		{"secret json", []string{"--format", "json", "k8s://prod/secret/app", staging}, "TOKEN"},
+		{"configmap matrix", []string{staging, "k8s://prod/configmap/app", "k8s://prod/secret/app"}, "TOKEN"},
+		{"kubectl output not json", []string{staging, "k8s://prod/configmap/noisy"}, "not valid JSON"},
+		{"secret not base64", []string{staging, "k8s://prod/secret/bad"}, "TOKEN"},
 		{"terminal", []string{staging, production}, "STRIPE_API_KEY"},
 		{"json", []string{"--format", "json", staging, production}, "STRIPE_API_KEY"},
 		{"keys only", []string{"--keys-only", staging, production}, "STRIPE_API_KEY"},
@@ -563,6 +617,97 @@ func TestExamples(t *testing.T) {
 	if res.stdout != want {
 		t.Errorf("three files json:\n%s\nwant:\n%s", res.stdout, want)
 	}
+}
+
+func TestKubernetesSources(t *testing.T) {
+	staging, _ := fixtures(t)
+	fakeCLI(t, "kubectl", kubectlScript(map[string]string{
+		"get configmap app -n prod -o json": `{"kind":"ConfigMap","data":{"DATABASE_URL":"postgres://user:` + secret + `@db/app","LOG_LEVEL":"info","REDIS_URL":"redis://cache"}}`,
+		"get secret app -n prod -o json":    `{"kind":"Secret","data":{"DATABASE_URL":"` + b64("postgres://user:"+secret+"@db/app") + `","LOG_LEVEL":"` + b64("debug") + `","REDIS_URL":"` + b64("redis://cache") + `","STRIPE_API_KEY":"` + b64("sk_"+secret) + `"}}`,
+	}))
+
+	res := run(t, staging, "k8s://prod/configmap/app")
+	if res.code != exitDrift {
+		t.Fatalf("configmap: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want := "Environment Drift\n\nMissing in target\n  STRIPE_API_KEY\n\nDifferent values\n  LOG_LEVEL\n\n2 differences found\n"
+	if res.stdout != want {
+		t.Errorf("configmap:\n%s\nwant:\n%s", res.stdout, want)
+	}
+	if res.stderr != "" {
+		t.Errorf("configmap: stderr = %q, want empty", res.stderr)
+	}
+
+	// The secret holds the same values as the staging file once decoded.
+	res = run(t, staging, "k8s://prod/secret/app")
+	if res.code != exitOK || res.stdout != "Environment Drift\n\nNo differences found\n" {
+		t.Errorf("secret: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+
+	res = run(t, "--format", "json", "k8s://prod/configmap/app", "k8s://prod/secret/app", staging)
+	if res.code != exitDrift {
+		t.Fatalf("json: exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	var got struct {
+		Source string   `json:"source"`
+		Envs   []string `json:"envs"`
+		Extra  []string `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, res.stdout)
+	}
+	if got.Source != "k8s://prod/configmap/app" || !slices.Equal(got.Envs, []string{"k8s://prod/configmap/app", "k8s://prod/secret/app", staging}) {
+		t.Errorf("json names = %q %v", got.Source, got.Envs)
+	}
+	if !slices.Equal(got.Extra, []string{"STRIPE_API_KEY"}) {
+		t.Errorf("json extra = %v", got.Extra)
+	}
+}
+
+func TestRemoteSourceErrors(t *testing.T) {
+	good := write(t, "good.env", "A=1\n")
+	t.Run("kubectl fails", func(t *testing.T) {
+		fakeCLI(t, "kubectl", `echo 'Error from server (NotFound): configmaps "app" not found' >&2; exit 1`)
+		res := run(t, good, "k8s://prod/configmap/app")
+		if res.code != exitError || res.stdout != "" {
+			t.Errorf("exit = %d, stdout = %q", res.code, res.stdout)
+		}
+		want := "Error from server (NotFound): configmaps \"app\" not found\n" +
+			"env-diff: k8s://prod/configmap/app: kubectl exited with status 1 (ran: kubectl get configmap app -n prod -o json)\n"
+		if res.stderr != want {
+			t.Errorf("stderr =\n%s\nwant:\n%s", res.stderr, want)
+		}
+	})
+	t.Run("kubectl stderr is forwarded even with --quiet", func(t *testing.T) {
+		fakeCLI(t, "kubectl", `echo 'Warning: kubeconfig is deprecated' >&2; printf '{"data":{"A":"1"}}'`)
+		res := run(t, "--quiet", good, "k8s://prod/configmap/app")
+		if res.code != exitOK || res.stdout != "" || res.stderr != "Warning: kubeconfig is deprecated\n" {
+			t.Errorf("exit = %d, stdout = %q, stderr = %q", res.code, res.stdout, res.stderr)
+		}
+	})
+	t.Run("kubectl missing", func(t *testing.T) {
+		fakeCLI(t, "not-kubectl", "exit 0")
+		res := run(t, good, "k8s://prod/configmap/app")
+		want := "env-diff: k8s://prod/configmap/app: kubectl not found in PATH\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
+	t.Run("bad shape is a usage error", func(t *testing.T) {
+		fakeCLI(t, "kubectl", `echo "must not run" >&2; exit 9`)
+		res := run(t, good, "k8s://prod/app")
+		want := "env-diff: k8s://prod/app: want k8s://<namespace>/<configmap|secret>/<name>\nRun 'env-diff --help' for usage.\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
+	t.Run("bad shape is reported before any source is loaded", func(t *testing.T) {
+		fakeCLI(t, "kubectl", `echo "must not run" >&2; exit 9`)
+		res := run(t, "k8s://prod/configmap/app", "k8s://prod/deployment/app")
+		if res.code != exitError || strings.Contains(res.stderr, "must not run") {
+			t.Errorf("exit = %d, stderr = %q", res.code, res.stderr)
+		}
+	})
 }
 
 func TestIgnore(t *testing.T) {

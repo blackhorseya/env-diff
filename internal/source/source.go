@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 
 	"github.com/blackhorseya/env-diff/internal/diff"
 )
@@ -35,7 +36,7 @@ type Resolver struct {
 
 // supportedSchemes is listed in the unknown-scheme error; remote adapters
 // extend it as they are added.
-const supportedSchemes = ""
+const supportedSchemes = " or k8s://"
 
 var schemeRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$`)
 
@@ -46,6 +47,10 @@ func (x Resolver) Resolve(arg string) (Source, error) {
 	m := schemeRE.FindStringSubmatch(arg)
 	if m == nil {
 		return fileSource{path: arg}, nil
+	}
+	switch strings.ToLower(m[1]) {
+	case "k8s":
+		return parseK8s(x, arg, m[2])
 	}
 	return nil, &UnknownSchemeError{Arg: arg, Scheme: m[1]}
 }
