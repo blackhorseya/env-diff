@@ -37,16 +37,18 @@ func write(t *testing.T, name, content string) string {
 	return path
 }
 
-// fakeCLI installs a shell script as the only program on PATH, so a remote
-// source runs it instead of the real kubectl or aws, and points every
+// fakeCLIs installs shell scripts as the only programs on PATH, so a remote
+// source runs them instead of the real kubectl or aws, and points every
 // configuration variable those CLIs read at an empty file, so a test can
 // never reach a real cluster or account with the developer's credentials.
-// The script must use only shell builtins: PATH holds nothing else.
-func fakeCLI(t *testing.T, name, script string) {
+// The scripts must use only shell builtins: PATH holds nothing else.
+func fakeCLIs(t *testing.T, scripts map[string]string) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-		t.Fatal(err)
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	empty := filepath.Join(dir, "empty")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
@@ -61,15 +63,20 @@ func fakeCLI(t *testing.T, name, script string) {
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
 }
 
-// kubectlScript answers `kubectl get <kind> <name> -n <ns> -o json` from a
-// table of command lines to JSON bodies and fails any other command line.
-func kubectlScript(replies map[string]string) string {
+func fakeCLI(t *testing.T, name, script string) {
+	t.Helper()
+	fakeCLIs(t, map[string]string{name: script})
+}
+
+// cliScript answers command lines from a table of arguments to stdout
+// bodies and fails any other command line.
+func cliScript(name string, replies map[string]string) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, `case "$*" in`)
 	for args, body := range replies {
 		fmt.Fprintf(&b, "  %q) printf '%%s' '%s' ;;\n", args, body)
 	}
-	fmt.Fprintln(&b, `  *) echo "fake kubectl: unexpected command line: $*" >&2; exit 9 ;;`)
+	fmt.Fprintf(&b, "  *) echo \"fake %s: unexpected command line: $*\" >&2; exit 9 ;;\n", name)
 	fmt.Fprintln(&b, "esac")
 	return b.String()
 }
@@ -230,7 +237,7 @@ func TestHelpAndVersion(t *testing.T) {
 		if res.code != exitOK || res.stderr != "" {
 			t.Errorf("%s: exit = %d, stderr = %q", flag, res.code, res.stderr)
 		}
-		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:", "k8s://<namespace>/configmap/<name>", "k8s://<namespace>/secret/<name>"} {
+		for _, want := range []string{"Usage:", "--keys-only", "--allow-extra", "--ignore", "--format", "--quiet", "Exit codes:", "k8s://<namespace>/configmap/<name>", "k8s://<namespace>/secret/<name>", "lambda://<function>", "ssm://<path>"} {
 			if !strings.Contains(res.stdout, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", flag, want, res.stdout)
 			}
@@ -360,12 +367,21 @@ func TestNeverPrintsValues(t *testing.T) {
 	dup := write(t, "dup.env", "TOKEN="+secret+"\nTOKEN="+secret+"\n")
 	unterminated := write(t, "unterminated.env", "TOKEN=\""+secret+"\n")
 	broken := write(t, "broken.env", secret+"\n")
-	fakeCLI(t, "kubectl", kubectlScript(map[string]string{
-		"get configmap app -n prod -o json":   `{"data":{"DATABASE_URL":"` + secret + `","LOG_LEVEL":"info","TOKEN":"` + secret + `"}}`,
-		"get secret app -n prod -o json":      `{"data":{"DATABASE_URL":"` + b64(secret) + `","TOKEN":"` + b64(secret) + `"}}`,
-		"get configmap noisy -n prod -o json": `error: ` + secret,
-		"get secret bad -n prod -o json":      `{"data":{"TOKEN":"` + secret + `!"}}`,
-	}))
+	fakeCLIs(t, map[string]string{
+		"kubectl": cliScript("kubectl", map[string]string{
+			"get configmap app -n prod -o json":   `{"data":{"DATABASE_URL":"` + secret + `","LOG_LEVEL":"info","TOKEN":"` + secret + `"}}`,
+			"get secret app -n prod -o json":      `{"data":{"DATABASE_URL":"` + b64(secret) + `","TOKEN":"` + b64(secret) + `"}}`,
+			"get configmap noisy -n prod -o json": `error: ` + secret,
+			"get secret bad -n prod -o json":      `{"data":{"TOKEN":"` + secret + `!"}}`,
+		}),
+		"aws": cliScript("aws", map[string]string{
+			"lambda get-function-configuration --function-name fn --output json":          `{"Environment":{"Variables":{"DATABASE_URL":"` + secret + `","TOKEN":"` + secret + `"}}}`,
+			"lambda get-function-configuration --function-name locked --output json":      `{"Environment":{"Variables":{},"Error":{"ErrorCode":"AccessDeniedException","Message":"` + secret + `"}}}`,
+			"lambda get-function-configuration --function-name noisy --output json":       `Traceback: ` + secret,
+			"ssm get-parameters-by-path --path /app/prod --with-decryption --output json": `{"Parameters":[{"Name":"/app/prod/DATABASE_URL","Type":"SecureString","Value":"` + secret + `"},{"Name":"/app/prod/TOKEN","Type":"SecureString","Value":"` + secret + `"}]}`,
+			"ssm get-parameters-by-path --path /noisy --with-decryption --output json":    `Traceback: ` + secret,
+		}),
+	})
 	tests := []struct {
 		name    string
 		args    []string
@@ -376,6 +392,13 @@ func TestNeverPrintsValues(t *testing.T) {
 		{"configmap matrix", []string{staging, "k8s://prod/configmap/app", "k8s://prod/secret/app"}, "TOKEN"},
 		{"kubectl output not json", []string{staging, "k8s://prod/configmap/noisy"}, "not valid JSON"},
 		{"secret not base64", []string{staging, "k8s://prod/secret/bad"}, "TOKEN"},
+		{"lambda", []string{staging, "lambda://fn"}, "TOKEN"},
+		{"lambda json", []string{"--format", "json", "lambda://fn", "k8s://prod/secret/app"}, "TOKEN"},
+		{"lambda decrypt error", []string{staging, "lambda://locked"}, "AccessDeniedException"},
+		{"aws output not json", []string{staging, "lambda://noisy"}, "not valid JSON"},
+		{"ssm", []string{staging, "ssm:///app/prod"}, "TOKEN"},
+		{"ssm json", []string{"--format", "json", "ssm:///app/prod", "lambda://fn"}, "TOKEN"},
+		{"ssm output not json", []string{staging, "ssm:///noisy"}, "not valid JSON"},
 		{"terminal", []string{staging, production}, "STRIPE_API_KEY"},
 		{"json", []string{"--format", "json", staging, production}, "STRIPE_API_KEY"},
 		{"keys only", []string{"--keys-only", staging, production}, "STRIPE_API_KEY"},
@@ -621,7 +644,7 @@ func TestExamples(t *testing.T) {
 
 func TestKubernetesSources(t *testing.T) {
 	staging, _ := fixtures(t)
-	fakeCLI(t, "kubectl", kubectlScript(map[string]string{
+	fakeCLI(t, "kubectl", cliScript("kubectl", map[string]string{
 		"get configmap app -n prod -o json": `{"kind":"ConfigMap","data":{"DATABASE_URL":"postgres://user:` + secret + `@db/app","LOG_LEVEL":"info","REDIS_URL":"redis://cache"}}`,
 		"get secret app -n prod -o json":    `{"kind":"Secret","data":{"DATABASE_URL":"` + b64("postgres://user:"+secret+"@db/app") + `","LOG_LEVEL":"` + b64("debug") + `","REDIS_URL":"` + b64("redis://cache") + `","STRIPE_API_KEY":"` + b64("sk_"+secret) + `"}}`,
 	}))
@@ -662,6 +685,93 @@ func TestKubernetesSources(t *testing.T) {
 	if !slices.Equal(got.Extra, []string{"STRIPE_API_KEY"}) {
 		t.Errorf("json extra = %v", got.Extra)
 	}
+}
+
+func TestLambdaSources(t *testing.T) {
+	staging, _ := fixtures(t)
+	empty := write(t, "empty.env", "")
+	fakeCLI(t, "aws", cliScript("aws", map[string]string{
+		"lambda get-function-configuration --function-name my-function:prod --output json": `{"FunctionName":"my-function","Environment":{"Variables":{"DATABASE_URL":"postgres://user:` + secret + `@db/app","LOG_LEVEL":"info","REDIS_URL":"redis://cache"}}}`,
+		"lambda get-function-configuration --function-name bare --output json":             `{"FunctionName":"bare","Runtime":"provided.al2023"}`,
+	}))
+
+	res := run(t, staging, "lambda://my-function:prod")
+	if res.code != exitDrift {
+		t.Fatalf("exit = %d, stderr:\n%s", res.code, res.stderr)
+	}
+	want := "Environment Drift\n\nMissing in target\n  STRIPE_API_KEY\n\nDifferent values\n  LOG_LEVEL\n\n2 differences found\n"
+	if res.stdout != want || res.stderr != "" {
+		t.Errorf("stdout:\n%s\nwant:\n%s\nstderr: %q", res.stdout, want, res.stderr)
+	}
+
+	// A function without environment variables is an empty environment.
+	res = run(t, empty, "lambda://bare")
+	if res.code != exitOK || res.stdout != "Environment Drift\n\nNo differences found\n" {
+		t.Errorf("no environment: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+
+	t.Run("aws fails", func(t *testing.T) {
+		fakeCLI(t, "aws", `echo 'An error occurred (ResourceNotFoundException) when calling the GetFunctionConfiguration operation: Function not found' >&2; exit 254`)
+		res := run(t, staging, "lambda://missing")
+		want := "An error occurred (ResourceNotFoundException) when calling the GetFunctionConfiguration operation: Function not found\n" +
+			"env-diff: lambda://missing: aws exited with status 254 (ran: aws lambda get-function-configuration --function-name missing --output json)\n"
+		if res.code != exitError || res.stdout != "" || res.stderr != want {
+			t.Errorf("exit = %d, stdout = %q, stderr =\n%s\nwant:\n%s", res.code, res.stdout, res.stderr, want)
+		}
+	})
+	t.Run("aws missing", func(t *testing.T) {
+		fakeCLI(t, "not-aws", "exit 0")
+		res := run(t, staging, "lambda://my-function")
+		want := "env-diff: lambda://my-function: aws not found in PATH\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
+	t.Run("bad shape is a usage error", func(t *testing.T) {
+		fakeCLI(t, "aws", `echo "must not run" >&2; exit 9`)
+		res := run(t, staging, "lambda://")
+		want := "env-diff: lambda://: want lambda://<function>[:<qualifier>]\nRun 'env-diff --help' for usage.\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
+}
+
+func TestSSMSources(t *testing.T) {
+	staging, _ := fixtures(t)
+	empty := write(t, "empty.env", "")
+	fakeCLI(t, "aws", cliScript("aws", map[string]string{
+		"ssm get-parameters-by-path --path /app/prod --with-decryption --output json": `{"Parameters":[` +
+			`{"Name":"/app/prod/DATABASE_URL","Type":"SecureString","Value":"postgres://user:` + secret + `@db/app","Version":2},` +
+			`{"Name":"/app/prod/LOG_LEVEL","Type":"String","Value":"info","Version":1},` +
+			`{"Name":"/app/prod/REDIS_URL","Type":"String","Value":"redis://cache","Version":1}]}`,
+		"ssm get-parameters-by-path --path / --with-decryption --output json": `{"Parameters":[]}`,
+	}))
+
+	want := "Environment Drift\n\nMissing in target\n  STRIPE_API_KEY\n\nDifferent values\n  LOG_LEVEL\n\n2 differences found\n"
+	for _, arg := range []string{"ssm:///app/prod", "ssm://app/prod", "ssm:///app/prod/"} {
+		res := run(t, staging, arg)
+		if res.code != exitDrift {
+			t.Fatalf("%s: exit = %d, stderr:\n%s", arg, res.code, res.stderr)
+		}
+		if res.stdout != want || res.stderr != "" {
+			t.Errorf("%s: stdout:\n%s\nwant:\n%s\nstderr: %q", arg, res.stdout, want, res.stderr)
+		}
+	}
+
+	res := run(t, empty, "ssm://")
+	if res.code != exitOK || res.stdout != "Environment Drift\n\nNo differences found\n" {
+		t.Errorf("empty root: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+
+	t.Run("bad shape is a usage error", func(t *testing.T) {
+		fakeCLI(t, "aws", `echo "must not run" >&2; exit 9`)
+		res := run(t, staging, "ssm://app//prod")
+		want := "env-diff: ssm://app//prod: want ssm://<path> such as ssm:///app/prod\nRun 'env-diff --help' for usage.\n"
+		if res.code != exitError || res.stderr != want {
+			t.Errorf("exit = %d, stderr = %q, want %q", res.code, res.stderr, want)
+		}
+	})
 }
 
 func TestRemoteSourceErrors(t *testing.T) {
