@@ -19,13 +19,16 @@ Different values
 3 differences found
 ```
 
-`env-diff` compares two or more `.env` files **by key**, not by line. Variable order,
-comments and blank lines are ignored, and **values are never printed**: the
-output only says whether a key is the same, missing, extra, or different.
-The exit code tells CI whether the environments drifted.
+`env-diff` compares two or more environments **by key**, not by line: `.env`
+files, Kubernetes ConfigMaps and Secrets, AWS Lambda functions and SSM
+Parameter Store paths, in any mix. Variable order, comments and blank lines
+are ignored, and **values are never printed**: the output only says whether
+a key is the same, missing, extra, or different. The exit code tells CI
+whether the environments drifted.
 
-The files behind every sample in this README live in [`examples/`](examples/);
-run the commands from that directory to reproduce them.
+The files behind every output sample in this README live in
+[`examples/`](examples/); run the commands from that directory to reproduce
+them.
 
 ## Installation
 
@@ -44,14 +47,15 @@ Or download a binary for macOS or Linux from the
 env-diff <source> <target> [<target>...] [flags]
 ```
 
-Every key is classified relative to the **source**, the first file:
+Each argument is a `.env` file or a [remote source](#remote-sources). Every
+key is classified relative to the **source**, the first argument:
 
-| Status    | Meaning                                            |
-|-----------|----------------------------------------------------|
-| same      | present in every file with the same value          |
-| missing   | present in source, absent from a target            |
-| extra     | absent from source, present in a target            |
-| different | present in every file, values not all the same     |
+| Status    | Meaning                                              |
+|-----------|------------------------------------------------------|
+| same      | present everywhere with the same value               |
+| missing   | present in source, absent from a target              |
+| extra     | absent from source, present in a target              |
+| different | present everywhere, values not all the same          |
 
 Presence is judged before values: a key absent from one target is
 *missing* even if the remaining copies also disagree.
@@ -62,7 +66,7 @@ Presence is judged before values: a key absent from one target is
 |------|---------------------------------------------------------|
 | 0    | no differences                                          |
 | 1    | differences found                                       |
-| 2    | error: file not found, invalid syntax, bad arguments    |
+| 2    | error: source unreadable, invalid syntax, bad arguments |
 
 ### `--keys-only`
 
@@ -140,14 +144,66 @@ present cells show a letter instead, and files sharing a letter share a
 value, so `a b b` above says staging is the odd one out. No value is
 printed, only which files agree.
 
+### Remote sources
+
+Any argument can name a remote store instead of a file. `env-diff` reads it
+with the CLI you already use for that store, so the cluster, account, region
+and credentials are whatever that CLI is configured for:
+
+| Argument | Runs | Permission |
+|----------|------|------------|
+| `k8s://<namespace>/configmap/<name>` | `kubectl get configmap <name> -n <namespace> -o json` | `get` configmaps |
+| `k8s://<namespace>/secret/<name>` | `kubectl get secret <name> -n <namespace> -o json` | `get` secrets |
+| `lambda://<function>[:<qualifier>]` | `aws lambda get-function-configuration --function-name <function> --output json` | `lambda:GetFunctionConfiguration` |
+| `ssm://<path>` | `aws ssm get-parameters-by-path --path <path> --with-decryption --output json` | `ssm:GetParametersByPath`, plus `kms:Decrypt` for SecureString |
+
+```
+env-diff .env.production k8s://prod/configmap/app
+env-diff .env.example k8s://prod/secret/app --keys-only --allow-extra
+env-diff k8s://staging/configmap/app k8s://prod/configmap/app
+env-diff .env.production lambda://checkout-api:live
+env-diff .env.production ssm:///checkout/prod
+```
+
+- Choose the cluster with `KUBECONFIG` or the current kube context, and the
+  AWS account and region with `AWS_PROFILE` and `AWS_REGION`. `env-diff` has
+  no flags of its own for them.
+- Secret `data` and ConfigMap `binaryData` are base64-decoded and SSM
+  SecureString values are decrypted, so values compare as the application
+  sees them. They are never printed. `--keys-only` ignores value
+  differences, but the values are still fetched.
+- `lambda://` takes a function name or ARN, with an optional version or
+  alias. A function without environment variables is an empty environment.
+- `ssm://` reads the parameters directly under the path, not recursively.
+  A key is the parameter name without the path, so `/checkout/prod/DB_HOST`
+  becomes `DB_HOST`; `ssm://checkout/prod` and `ssm:///checkout/prod/` mean
+  the same path. Names containing `-` or `.` are kept as they are, so they
+  show up as missing or extra against a `.env` file; leave them out with
+  `--ignore`.
+- Only the read commands above are run. Nothing is ever written back.
+- `kubectl` and `aws` print their own errors (not found, forbidden, expired
+  credentials) to stderr, and those reach you unchanged. When the command
+  fails, `env-diff` exits 2 and names the exact command it ran so you can
+  rerun it.
+
+Other stores are not built in, but anything that can print `KEY=value`
+lines works through process substitution. The lines must follow the
+[syntax below](#supported-env-syntax), so values with quotes or line breaks
+need quoting:
+
+```
+env-diff .env.production <(my-secrets-cli export --format dotenv)
+```
+
 ### `--format json`
 
-Structured output for automation. `envs` lists the files in order; `matrix`
-maps every key to one entry per file: files with the same number share a
-value, `null` marks the key as absent. `target` is present only when exactly
-two files were compared. `ignored` lists the ignored keys that existed. With `--allow-extra`, `extra`
-is still listed but `drift` ignores it. The key lists are always arrays,
-never `null`.
+Structured output for automation. `envs` lists the arguments in order, as
+typed; `matrix` maps every key to one entry per environment: environments
+with the same number share a value, `null` marks the key as absent. `target`
+is present only when exactly two environments were compared. `ignored`
+lists the ignored keys that existed. With `--allow-extra`, `extra` is still
+listed but `drift` ignores it. The key lists are always arrays, never
+`null`.
 
 ```
 $ env-diff .env.staging .env.production --format json
@@ -209,28 +265,44 @@ $ env-diff .env.staging .env.production --format json
 
 ### `--quiet`
 
-Print nothing and rely on the exit code. Errors are still reported on stderr.
+Print nothing and rely on the exit code. Errors are still reported on stderr,
+and so is anything `kubectl` or `aws` print there.
 
 ### CI
 
 On GitHub, use the action (Linux and macOS runners):
 
 ```yaml
-- uses: blackhorseya/env-diff@v0.2.0
+- uses: blackhorseya/env-diff@v0.3.0
   with:
     files: .env.example .env.production
     keys-only: "true"
     allow-extra: "true"
 ```
 
+Remote sources work in the action too. Set up `kubectl` or `aws` in an
+earlier step; the action uses whatever that step configured:
+
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::123456789012:role/env-diff-read
+    aws-region: us-east-1
+- uses: blackhorseya/env-diff@v0.3.0
+  with:
+    files: .env.example ssm:///checkout/prod
+    keys-only: "true"
+    allow-extra: "true"
+```
+
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `files` | required | whitespace-separated files; the first is the reference |
+| `files` | required | whitespace-separated files or source URIs; the first is the reference |
 | `keys-only` | `false` | ignore value differences |
 | `allow-extra` | `false` | keys only the targets have are not drift |
 | `ignore` | | comma-separated keys to leave out |
 | `format` | `terminal` | `terminal` or `json` |
-| `version` | the action's ref | release to download, such as `v0.2.0` |
+| `version` | the action's ref | release to download, such as `v0.3.0` |
 | `install` | `true` | `false` uses an `env-diff` already on `PATH` |
 | `fail-on-drift` | `true` | `false` lets the step pass on drift; errors still fail it |
 
@@ -251,11 +323,16 @@ Flags may appear before or after the file arguments.
 Environment files hold secrets, so safe output is the default rather than an
 option:
 
-- Values are never printed, in terminal or JSON output.
-- Error messages carry a line number and, for duplicates, the key name, but
-  never the content of the line.
-- The tool reads two local files and nothing else: no network, no telemetry,
-  no state on disk.
+- Values are never printed, in terminal or JSON output, whether they come
+  from a file or a remote store.
+- Error messages carry a line number, a key name or the command that failed,
+  but never a value or the content of a line.
+- Files are read locally. Remote sources are read only by running `kubectl`
+  or `aws` with the read commands listed under
+  [Remote sources](#remote-sources). `env-diff` itself opens no network
+  connection, sends no telemetry and keeps no state on disk.
+- The one thing `env-diff` does not filter is what `kubectl` or `aws` write
+  to stderr. It is passed through as is so their own diagnostics reach you.
 
 ## Supported `.env` syntax
 
@@ -305,8 +382,10 @@ task snapshot   # goreleaser snapshot build into ./dist
 
 ## Non-goals
 
-`env-diff` detects drift. It does not fix it, sync files, scan for secrets,
-or talk to Kubernetes, AWS, Vault, or any remote source.
+`env-diff` detects drift. It does not fix it, sync files, write to any store,
+or scan for secrets. Stores other than Kubernetes ConfigMaps and Secrets,
+AWS Lambda and SSM Parameter Store, such as Vault, are not built in; use
+process substitution.
 
 ## License
 
